@@ -8,7 +8,6 @@ import 'dart:ui';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:pica_comic/comic_source/comic_source.dart';
 import 'package:pica_comic/foundation/app.dart';
@@ -28,6 +27,8 @@ import 'package:pica_comic/pages/show_image_page.dart';
 import 'package:pica_comic/tools/extensions.dart';
 import 'package:pica_comic/tools/tags_translation.dart';
 import 'package:pica_comic/tools/translations.dart';
+import 'image_display.dart';
+import '../foundation/image_loader/animated_image_codec.dart';
 
 import '../base.dart';
 import '../foundation/ui_mode.dart';

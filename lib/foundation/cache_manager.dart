@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -274,19 +275,18 @@ class CachingFile{
 
   final File file;
 
-  final List<int> _buffer = [];
+  final _buffer = BytesBuilder(copy: false);
 
   Future<void> writeBytes(List<int> data) async{
-    _buffer.addAll(data);
+    _buffer.add(data);
     if(_buffer.length > 1024 * 1024){
-      await file.writeAsBytes(_buffer, mode: FileMode.append);
-      _buffer.clear();
+      await file.writeAsBytes(_buffer.takeBytes(), mode: FileMode.append);
     }
   }
 
   Future<void> close() async{
     if(_buffer.isNotEmpty){
-      await file.writeAsBytes(_buffer, mode: FileMode.append);
+      await file.writeAsBytes(_buffer.takeBytes(), mode: FileMode.append);
     }
     CacheManager()._db.execute('''
       INSERT OR REPLACE INTO cache (key, dir, name, expires) VALUES (?, ?, ?, ?)

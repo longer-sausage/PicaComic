@@ -5,18 +5,20 @@ import 'dart:io';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:pica_comic/comic_source/comic_source.dart';
 import 'package:pica_comic/components/components.dart';
+import 'package:pica_comic/components/image_display.dart';
+import 'package:pica_comic/components/zoomable_image.dart';
 import 'package:pica_comic/components/custom_slider.dart';
 import 'package:pica_comic/components/scrollable_list/src/item_positions_listener.dart';
 import 'package:pica_comic/components/scrollable_list/src/scrollable_positioned_list.dart';
 import 'package:pica_comic/components/window_frame.dart';
 import 'package:pica_comic/foundation/image_loader/base_image_provider.dart';
+import 'package:pica_comic/foundation/image_loader/image_prefetcher.dart';
+import 'package:pica_comic/foundation/image_loader/animated_image_codec.dart';
 import 'package:pica_comic/foundation/image_loader/file_image_loader.dart';
 import 'package:pica_comic/foundation/image_loader/stream_image_provider.dart';
 import 'package:pica_comic/foundation/local_favorites.dart';
@@ -224,6 +226,7 @@ class ComicReadingPage extends StatelessWidget {
                 ?.setDarkTheme());
       }
     }, dispose: (logic) {
+      logic.imagePrefetcher.dispose();
       //清除缓存并减小最大缓存
       BaseImageProvider.clearCache();
       BaseImageProvider.setCacheSizeLimit(50 * 1024 * 1024);

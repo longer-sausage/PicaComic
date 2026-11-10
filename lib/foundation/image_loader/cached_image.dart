@@ -56,5 +56,5 @@ class CachedImageProvider
   }
 
   @override
-  String get key => url;
+  String get key => sourceKey == null ? url : '$sourceKey$url';
 }

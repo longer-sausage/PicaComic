@@ -56,7 +56,7 @@ class ComicReadingPageLogic extends StateController {
 
   bool get isCtrlPressed => HardwareKeyboard.instance.isControlPressed;
 
-  List<bool> requestedLoadingItems = [];
+  final imagePrefetcher = ImagePrefetcher();
 
   bool haveUsedInitialPage = false;
 
@@ -168,6 +168,7 @@ class ComicReadingPageLogic extends StateController {
   var urls = <String>[];
 
   void reload() {
+    imagePrefetcher.clear();
     index = 1;
     pageController = PageController(initialPage: 1);
     isLoading = true;
@@ -248,6 +249,7 @@ class ComicReadingPageLogic extends StateController {
       return;
     }
     order += 1;
+    imagePrefetcher.clear();
     urls = [];
     isLoading = true;
     tools = false;
@@ -258,6 +260,7 @@ class ComicReadingPageLogic extends StateController {
   }
 
   void jumpToChapter(int index){
+    imagePrefetcher.clear();
     order = index;
     urls = [];
     isLoading = true;
@@ -282,6 +285,7 @@ class ComicReadingPageLogic extends StateController {
     }
 
     order -= 1;
+    imagePrefetcher.clear();
     urls = [];
     isLoading = true;
     tools = false;
@@ -316,6 +320,7 @@ class ComicReadingPageLogic extends StateController {
   }
 
   void refresh_() {
+    imagePrefetcher.clear();
     pageController = PageController(initialPage: 1);
     itemScrollController = ItemScrollController();
     itemScrollListener = ItemPositionsListener.create();

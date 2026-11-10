@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -102,7 +103,7 @@ class ImageManager {
       if (dioRes.data == null) {
         throw Exception("Empty Data");
       }
-      List<int> imageData = [];
+      final imageData = BytesBuilder(copy: false);
       int? expectedBytes;
       try {
         expectedBytes =
@@ -111,7 +112,7 @@ class ImageManager {
         //忽略
       }
       await for (var res in dioRes.data!.stream) {
-        imageData.addAll(res);
+        imageData.add(res);
         await cachingFile.writeBytes(res);
         var progress = DownloadProgress(imageData.length,
             (expectedBytes ?? imageData.length + 1), url, savePath);
@@ -126,7 +127,7 @@ class ImageManager {
         imageData.length,
         url,
         savePath,
-        Uint8List.fromList(imageData),
+        imageData.takeBytes(),
         ext,
       );
     } catch (e, s) {
@@ -246,7 +247,7 @@ class ImageManager {
       var imgKey = readerLink.split('/')[4];
 
       int totalBytes = 0;
-      List<int> data = [];
+      final data = BytesBuilder(copy: false);
 
       if (gallery.auth?["mpvKey"] != null) {
         Future<(String image, String nl)> getImageFromApi([String? nl]) async {
@@ -392,7 +393,7 @@ class ImageManager {
             await for (var b in stream) {
               await cachingFile.writeBytes(b);
               currentBytes += b.length;
-              data.addAll(b);
+              data.add(b);
               var progress = DownloadProgress(
                 currentBytes,
                 expectedBytes + 1,
@@ -426,14 +427,15 @@ class ImageManager {
       }
 
       await cachingFile.close();
-      var ext = detectFileType(data).ext.replaceFirst(('.'), '');
+      final imageBytes = data.takeBytes();
+      var ext = detectFileType(imageBytes).ext.replaceFirst(('.'), '');
       CacheManager().setType(key, ext);
       yield DownloadProgress(
         totalBytes,
         totalBytes,
         cacheKey,
         savePath,
-        Uint8List.fromList(data),
+        imageBytes,
         ext,
       );
     } catch (e, s) {
@@ -503,9 +505,9 @@ class ImageManager {
         }
       }
       var currentBytes = 0;
-      var data = <int>[];
+      final data = BytesBuilder(copy: false);
       await for (var b in stream) {
-        data.addAll(b);
+        data.add(b);
         await cachingFile.writeBytes(b);
         currentBytes += b.length;
         var progress = DownloadProgress(
@@ -517,7 +519,7 @@ class ImageManager {
       var ext = getExt(res);
       CacheManager().setType(key, ext);
       yield DownloadProgress(currentBytes, currentBytes, url, savePath,
-          Uint8List.fromList(data), ext);
+          data.takeBytes(), ext);
     } catch (e) {
       caching?.cancel();
       if (e is DioException && e.type == DioExceptionType.badResponse) {
@@ -658,7 +660,7 @@ class ImageManager {
               headers: config['headers'] ?? {'user-agent': webUA},
               responseType: ResponseType.stream));
 
-      List<int> imageData = [];
+      final imageData = BytesBuilder(copy: false);
 
       int? expectedBytes = res.data!.contentLength;
       if (expectedBytes == -1) {
@@ -671,7 +673,7 @@ class ImageManager {
         if (!shouldModifyData) {
           await caching.writeBytes(data);
         }
-        imageData.addAll(data);
+        imageData.add(data);
         var progress = DownloadProgress(
           imageData.length,
           (expectedBytes ?? imageData.length + 1),
@@ -686,7 +688,7 @@ class ImageManager {
 
       if (shouldModifyData) {
         var data = (config['onResponse']
-            as JSInvokable)(Uint8List.fromList(imageData));
+            as JSInvokable)(imageData.takeBytes());
         imageData.clear();
         if (data is! Uint8List) {
           throw "Invalid Config: onImageLoad.onResponse return invalid type\n"
@@ -706,7 +708,7 @@ class ImageManager {
         length,
         url,
         savePath,
-        result ?? Uint8List.fromList(imageData),
+        result ?? imageData.takeBytes(),
         ext,
       );
     } catch (e) {
@@ -724,6 +726,7 @@ class ImageManager {
   }
 
   Future<void> wait(String cacheKey) {
+    if (!loadingItems.containsKey(cacheKey)) return Future<void>.value();
     int timeout = 50;
     return Future.doWhile(() async {
       await Future.delayed(const Duration(milliseconds: 300));
@@ -775,7 +778,7 @@ class ImageManager {
               headers: config['headers'] ?? {'user-agent': webUA},
               responseType: ResponseType.stream));
 
-      List<int> imageData = [];
+      final imageData = BytesBuilder(copy: false);
 
       int? expectedBytes = res.data!.contentLength;
       if (expectedBytes == -1) {
@@ -788,7 +791,7 @@ class ImageManager {
         if (!shouldModifyData) {
           await caching.writeBytes(data);
         }
-        imageData.addAll(data);
+        imageData.add(data);
         var progress = DownloadProgress(imageData.length,
             expectedBytes ?? (imageData.length + 1), url, savePath);
         yield progress;
@@ -799,7 +802,7 @@ class ImageManager {
 
       if (shouldModifyData) {
         var data = (config['onResponse']
-            as JSInvokable)(Uint8List.fromList(imageData));
+            as JSInvokable)(imageData.takeBytes());
         imageData.clear();
         if (data is! Uint8List) {
           throw "Invalid Config: onImageLoad.onResponse return invalid type\n"
@@ -812,7 +815,7 @@ class ImageManager {
 
       await caching.close();
       yield DownloadProgress(
-          1, 1, url, savePath, result ?? Uint8List.fromList(imageData));
+          1, 1, url, savePath, result ?? imageData.takeBytes());
     } catch (e) {
       Log.error("Network", "Failed to load a image:\nUrl:$url\nError:$e");
       caching?.cancel();
