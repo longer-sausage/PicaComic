@@ -141,9 +141,9 @@ final htManga = ComicSource.named(
       var res = await HtmangaNetwork().login(account, pwd);
       if (!res.error) {
         htManga.data['name'] = account;
+        htManga.data['account'] = <String>[account, pwd];
+        await htManga.saveData();
       }
-      var a = <String>[account, pwd];
-      htManga.data['account'] = a;
       return res;
     },
     logout: () {
@@ -206,9 +206,7 @@ class _HtComicTile extends ComicTile {
   Widget get image => AnimatedImage(
         image: CachedImageProvider(
           comic.image,
-          headers: {
-            "User-Agent": webUA,
-          },
+          headers: HtmangaNetwork.headers,
         ),
         fit: BoxFit.cover,
         height: double.infinity,

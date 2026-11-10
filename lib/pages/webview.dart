@@ -192,7 +192,13 @@ class DesktopWebview {
   String? title;
 
   void onMessage(String message) {
-    var json = jsonDecode(message);
+    if (message.isEmpty || message == 'null' || message == '""') return;
+    dynamic json;
+    try {
+      json = jsonDecode(message);
+    } on FormatException {
+      return;
+    }
     if(json is Map){
       if(json["id"] == "document_created"){
         title = json["data"]["title"];
@@ -231,7 +237,7 @@ class DesktopWebview {
     });
   }
 
-  void open() async {
+  Future<void> open() async {
     _webview = await WebviewWindow.create(configuration: CreateConfiguration(
       useWindowPositionAndSize: true,
       userDataFolderWindows: "${App.dataPath}\\webview",

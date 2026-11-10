@@ -223,6 +223,7 @@ class _LoginPageState extends State<_LoginPage> {
   }
 
   void login() {
+    if (loading) return;
     if (username.isEmpty || password.isEmpty) {
       showToast(message: "不能为空".tl, icon: const Icon(Icons.error_outline));
       return;
@@ -231,6 +232,7 @@ class _LoginPageState extends State<_LoginPage> {
       loading = true;
     });
     widget.login(username, password).then((value) {
+      if (!mounted) return;
       if (value.error) {
         showToast(message: value.errorMessage!);
         setState(() {

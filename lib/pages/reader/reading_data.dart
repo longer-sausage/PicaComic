@@ -298,7 +298,7 @@ class HtReadingData extends ReadingData {
 
   @override
   Stream<DownloadProgress> loadImageNetwork(int ep, int page, String url) {
-    return ImageManager().getImage(url);
+    return ImageManager().getImage(url, HtmangaNetwork.headers);
   }
 
   @override
