@@ -503,7 +503,8 @@ class _SearchOptionsState extends State<_SearchOptions> {
             const SizedBox(width: 8),
             SizedBox(
               width: 68,
-              child: TextField(
+              child: TextFormField(
+                initialValue: ehStartPage?.toString() ?? '',
                 onChanged: (s) {
                   ehStartPage = int.tryParse(s);
                   update();
@@ -519,7 +520,8 @@ class _SearchOptionsState extends State<_SearchOptions> {
             const SizedBox(width: 8),
             SizedBox(
               width: 68,
-              child: TextField(
+              child: TextFormField(
+                initialValue: ehEndPage?.toString() ?? '',
                 onChanged: (s) {
                   ehEndPage = int.tryParse(s);
                   update();

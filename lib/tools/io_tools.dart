@@ -121,7 +121,9 @@ Future<bool> exportPdf(String pdfPath) async {
     } else {
       final FileSaveLocation? result = await getSaveLocation(
         suggestedName: File(pdfPath).name,
-        acceptedTypeGroups: [const XTypeGroup(label: 'pdf', extensions: ['pdf'])],
+        acceptedTypeGroups: [
+          const XTypeGroup(label: 'pdf', extensions: ['pdf'])
+        ],
       );
 
       if (result != null) {
@@ -497,8 +499,9 @@ Future<bool> importData([String? filePath]) async {
         "Appdata",
         "The data file version is $fileVersion, while the app data version is "
             "$appVersion\nStop importing data");
+    return true;
   }
-  var dataReadRes = appdata.readDataFromJson(json);
+  var dataReadRes = await appdata.readDataFromJson(json);
   if (!dataReadRes) {
     LogManager.addLog(
         LogLevel.error, "Appdata", "appdata.readDataFromJson(json) failed");

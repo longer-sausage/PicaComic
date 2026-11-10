@@ -145,8 +145,8 @@ class HitomiComicPage extends BaseComicPage<HitomiComic> {
     };
     if (categoryParam != null && tag != "N/A") {
       context.to(
-            () => SearchResultPage(
-          keyword: categoryParam,
+            () => SearchResultPage.forTag(
+          tag: categoryParam,
           sourceKey: 'hitomi',
         ),
       );

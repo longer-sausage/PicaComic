@@ -172,7 +172,7 @@ class HitomiSearch{
 
     if(ns == 'female' || ns == 'male'){
       area = 'tag';
-      tag = term[0];
+      tag = term;
     }
 
     return getGalleryIdsFromNozomi(area, tag, language);

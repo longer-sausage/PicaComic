@@ -205,8 +205,8 @@ class NhentaiComicPage extends BaseComicPage<NhentaiComic> {
 
     if (categoryParam == null) {
       context.to(
-        () => SearchResultPage(
-          keyword: tag,
+        () => SearchResultPage.forTag(
+          tag: tag,
           sourceKey: sourceKey,
         ),
       );

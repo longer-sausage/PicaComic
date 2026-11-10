@@ -43,8 +43,11 @@ class Webdav {
     }
     _haveWaitingTask = false;
     _isOperating = true;
-    appdata.settings[46] =
-        (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+    // Rapid favorite edits must produce distinct snapshots, even in one second.
+    appdata.settings[46] = max(
+      DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      (int.tryParse(appdata.settings[46]) ?? 0) + 1,
+    ).toString();
     appdata.updateSettings(false);
     config ??= appdata.settings[45];
     var configs = config.split(';');
@@ -80,7 +83,8 @@ class Webdav {
           }
         }
       }
-      await client.writeFromFile(await exportDataToFile(false, "${App.cachePath}/userdata.picadata"),
+      await client.writeFromFile(
+          await exportDataToFile(false, "${App.cachePath}/userdata.picadata"),
           "${configs[3]}${appdata.settings[46]}.picadata");
     } catch (e, s) {
       LogManager.addLog(LogLevel.error, "Sync",

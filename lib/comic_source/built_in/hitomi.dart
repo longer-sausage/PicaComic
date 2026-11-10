@@ -33,8 +33,8 @@ final hitomi = ComicSource.named(
     ),
   ],
   searchPageData: SearchPageData.named(
-    overrideSearchResultBuilder: (keyword, options) {
-      return HitomiSearchPage(keyword);
+    overrideSearchResultBuilder: (query, options) {
+      return HitomiSearchPage(query.keywordFor('hitomi'), query: query);
     },
     enableLanguageFilter: true,
   ),
@@ -89,7 +89,7 @@ class _HiComicTile extends ComicTile {
         } else {
           var history = await History.findOrCreate(res.data);
           App.globalTo(
-                () => ComicReadingPage.hitomi(
+            () => ComicReadingPage.hitomi(
               res.data,
               comic.link,
               initialPage: history.page,

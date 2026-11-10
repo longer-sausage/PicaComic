@@ -2,8 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:pica_comic/base.dart';
 import 'package:pica_comic/comic_source/comic_source.dart';
 import 'package:pica_comic/components/components.dart';
+import 'package:pica_comic/components/search_favorites.dart';
+import 'package:pica_comic/components/search_query_bar.dart';
 import 'package:pica_comic/foundation/app.dart';
 import 'package:pica_comic/foundation/pair.dart';
+import 'package:pica_comic/foundation/search_query.dart';
+import 'package:pica_comic/foundation/search_query_controller.dart';
 import 'package:pica_comic/foundation/ui_mode.dart';
 import 'package:pica_comic/pages/comic_page.dart';
 import 'package:pica_comic/pages/search_result_page.dart';
@@ -15,101 +19,6 @@ import 'package:sliver_tools/sliver_tools.dart';
 
 typedef FilterChip = FilterChipFixedWidth;
 
-class _FloatingSearchBar extends StatefulWidget {
-  const _FloatingSearchBar(
-      {Key? key,
-      required this.supportingText,
-      required this.onFinish,
-      required this.controller,
-      this.onChanged,
-      this.focusNode})
-      : super(key: key);
-
-  final void Function(String) onFinish;
-  final String supportingText;
-  final TextEditingController controller;
-  final void Function(String)? onChanged;
-  final FocusNode? focusNode;
-
-  @override
-  State<_FloatingSearchBar> createState() => _FloatingSearchBarState();
-}
-
-class _FloatingSearchBarState extends State<_FloatingSearchBar> {
-  @override
-  Widget build(BuildContext context) {
-    final ColorScheme colorScheme = Theme.of(context).colorScheme;
-    final TextTheme textTheme = Theme.of(context).textTheme;
-    var padding = 12.0;
-    return Container(
-      padding: EdgeInsets.fromLTRB(padding, 0, padding, 0),
-      margin: const EdgeInsets.symmetric(horizontal: 12) +
-          const EdgeInsets.only(top: 8),
-      width: double.infinity,
-      height: 48,
-      decoration: BoxDecoration(
-        color: colorScheme.primaryContainer,
-        borderRadius: BorderRadius.circular(32),
-      ),
-      child: Row(children: [
-        Tooltip(
-          message: "返回".tl,
-          child: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: () => context.pop(),
-          ),
-        ),
-        Expanded(
-          child: Center(
-            child: TextField(
-              controller: widget.controller,
-              onChanged: (s) {
-                if (s.length <= 1) {
-                  setState(() {});
-                }
-                widget.onChanged?.call(s);
-              },
-              focusNode: widget.focusNode,
-              decoration: InputDecoration(
-                isCollapsed: true,
-                border: InputBorder.none,
-                hintText: widget.supportingText,
-                hintStyle: textTheme.bodyLarge?.apply(
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ),
-              textInputAction: TextInputAction.search,
-              onSubmitted: widget.onFinish,
-            ),
-          ),
-        ),
-        if (widget.controller.text.isNotEmpty)
-          Tooltip(
-            message: "clear",
-            child: IconButton(
-              icon: const Icon(Icons.clear_rounded),
-              iconSize: 18,
-              onPressed: () {
-                setState(() {
-                  widget.controller.text = "";
-                });
-              },
-            ),
-          ),
-        Tooltip(
-          message: "search",
-          child: IconButton(
-            icon: const Icon(Icons.search),
-            onPressed: () {
-              widget.onFinish(widget.controller.text);
-            },
-          ),
-        ),
-      ]),
-    );
-  }
-}
-
 class PreSearchController extends StateController {
   String target = '';
 
@@ -120,33 +29,22 @@ class PreSearchController extends StateController {
 
   var suggestions = <Pair<String, TranslationType>>[];
 
-  String? language;
+  int optionsRevision = 0;
 
   bool limitHistory = true;
 
   void updateOptions() {
-    for (var source in ComicSource.sources) {
-      if (source.key == target &&
-          source.searchPageData?.searchOptions != null) {
-        options = List.generate(
-          source.searchPageData!.searchOptions!.length,
-          (index) => source.searchPageData!.searchOptions![index].defaultValue,
-        );
-      }
-    }
-  }
-
-  void updateTarget(String i) {
-    target = i;
-    updateOptions();
-    update();
+    options =
+        ComicSource.find(target)?.searchPageData?.normalizeOptions([]) ?? [];
+    optionsRevision++;
   }
 
   PreSearchController() {
     var searchSource = <String>[];
     for (var source in ComicSource.sources) {
-      searchSource.add(source.key);
+      if (source.searchPageData != null) searchSource.add(source.key);
     }
+    if (searchSource.isEmpty) return;
     if (!searchSource.contains(appdata.appSettings.initialSearchTarget)) {
       appdata.appSettings.initialSearchTarget = searchSource.first;
       appdata.updateSettings();
@@ -156,43 +54,96 @@ class PreSearchController extends StateController {
   }
 }
 
-class PreSearchPage extends StatelessWidget {
-  PreSearchPage({String initialValue = "", super.key})
-      : controller = TextEditingController(text: initialValue);
+class PreSearchPage extends StatefulWidget {
+  const PreSearchPage({this.initialValue = '', super.key});
 
-  final TextEditingController controller;
+  final String initialValue;
 
-  final searchController = StateController.put(PreSearchController());
+  @override
+  State<PreSearchPage> createState() => _PreSearchPageState();
+}
+
+class _PreSearchPageState extends State<PreSearchPage> {
+  late final SearchQueryController queryController;
+  late final PreSearchController searchController;
+  TextEditingController get controller => queryController.textController;
 
   final comicSources =
       ComicSource.sources.where((element) => element.searchPageData != null);
 
   final FocusNode _focusNode = FocusNode();
 
+  @override
+  void initState() {
+    super.initState();
+    searchController = StateController.put(PreSearchController());
+    queryController = SearchQueryController(text: widget.initialValue);
+    if (comicSources.isNotEmpty) configureLanguage();
+    queryController.addListener(queryChanged);
+  }
+
+  void queryChanged() => searchController.update(['search-bar', 'mode']);
+
+  void configureLanguage() => queryController.configureLanguageFilter(
+        enabled: searchController.searchPageData.enableLanguageFilter,
+        defaultLanguage: appdata.defaultSearchLanguage,
+      );
+
+  void selectTarget(String target) {
+    searchController.target = target;
+    searchController.updateOptions();
+    configureLanguage();
+    findSuggestions();
+    searchController.update();
+  }
+
+  void restoreSearch(SavedSearch search) {
+    searchController.target = search.sourceKey;
+    searchController.options =
+        searchController.searchPageData.normalizeOptions(search.options);
+    searchController.optionsRevision++;
+    queryController.restore(search.query);
+    configureLanguage();
+    searchController.suggestions.clear();
+    searchController.update();
+  }
+
+  @override
+  void dispose() {
+    queryController.removeListener(queryChanged);
+    queryController.dispose();
+    _focusNode.dispose();
+    searchController.dispose();
+    super.dispose();
+  }
+
   void search([String? s, String? type]) {
-    var keyword = (s ?? controller.text).trim();
-
-    if (searchController.language != null &&
-        searchController.searchPageData.enableLanguageFilter) {
-      // 在添加语言筛选前，先移除掉可能存在的 language: 部分
-      // 主要是为了解决强迫症
-      final languagePattern = RegExp(r'\s*language:\w+');
-      keyword = keyword.replaceAll(languagePattern, '').trim();
-      keyword += " language:${searchController.language}";
+    final target = type ?? searchController.target;
+    final data = ComicSource.find(target)?.searchPageData;
+    if (data == null) return;
+    var query = queryController.query;
+    if (s != null) {
+      final externalQuery = SearchQueryController(text: s);
+      externalQuery.configureLanguageFilter(
+        enabled: data.enableLanguageFilter,
+        defaultLanguage: appdata.defaultSearchLanguage,
+      );
+      query = externalQuery.query;
+      externalQuery.dispose();
     }
-
-    var context = App.mainNavigatorKey!.currentContext!;
     context.to(
       () => SearchResultPage(
-        keyword: keyword,
-        sourceKey: type ?? searchController.target,
-        options: searchController.options,
+        keyword: query.keywordFor(target),
+        query: query,
+        sourceKey: target,
+        options: data.normalizeOptions(
+            target == searchController.target ? searchController.options : []),
       ),
     );
   }
 
   void findSuggestions() {
-    var text = controller.text.split(" ").last;
+    var text = queryController.suggestionText;
     var suggestions = searchController.suggestions;
 
     suggestions.clear();
@@ -212,27 +163,13 @@ class PreSearchPage extends StatelessWidget {
 
     if (!searchController.searchPageData.enableTagsSuggestions) return;
 
-    bool check(String text, String key, String value) {
-      if (text.removeAllBlank == "") {
-        return false;
-      }
-      if (key.length >= text.length && key.substring(0, text.length) == text ||
-          (key.contains(" ") &&
-              key.split(" ").last.length >= text.length &&
-              key.split(" ").last.substring(0, text.length) == text)) {
-        return true;
-      } else if (value.length >= text.length && value.contains(text)) {
-        return true;
-      }
-      return false;
-    }
-
     void find(Map<String, String> map, TranslationType type) {
       for (var element in map.entries) {
         if (suggestions.length > 200) {
           break;
         }
-        if (check(text, element.key, element.value)) {
+        if (SearchQueryController.matchesSuggestion(
+            text, element.key, element.value)) {
           suggestions.add(Pair(element.key, type));
         }
       }
@@ -252,6 +189,12 @@ class PreSearchPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (comicSources.isEmpty) {
+      return Scaffold(
+        appBar: Appbar(title: Text('搜索'.tl)),
+        body: Center(child: Text('没有可用的搜索目标'.tl)),
+      );
+    }
     return Scaffold(
       floatingActionButton: FloatingActionButton(
         onPressed: search,
@@ -263,14 +206,14 @@ class PreSearchPage extends StatelessWidget {
             SizedBox(
               height: MediaQuery.of(context).padding.top,
             ),
-          Builder(
-            builder: (context) => _FloatingSearchBar(
-              supportingText: '${'搜索'.tl} / ${'链接'.tl} / ID',
-              onFinish: (s) {
-                // if (s == "") return;
-                search();
-              },
-              controller: controller,
+          StateBuilder<PreSearchController>(
+            id: 'search-bar',
+            builder: (logic) => SearchQueryBar(
+              hintText: '${'搜索'.tl} / ${'链接'.tl} / ID',
+              onSearch: search,
+              sourceKey: logic.target,
+              options: logic.options,
+              controller: queryController,
               onChanged: (s) {
                 findSuggestions();
                 searchController.update([1, 100]);
@@ -291,8 +234,7 @@ class PreSearchPage extends StatelessWidget {
     var widget = StateBuilder<PreSearchController>(
       id: 100,
       builder: (logic) {
-        if (controller.text.removeAllBlank.isEmpty ||
-            controller.text.endsWith(" ") ||
+        if (queryController.suggestionText.isEmpty ||
             searchController.suggestions.isEmpty) {
           return buildMainView(context, logic);
         } else {
@@ -331,6 +273,11 @@ class PreSearchPage extends StatelessWidget {
                 title: Text("搜索选项".tl),
               ).toSliver(),
             buildTargetSelector(context).toSliver(),
+            SearchFavorites(
+              key: ValueKey(logic.target),
+              sourceKey: logic.target,
+              onSelected: restoreSearch,
+            ).toSliver(),
             SliverAnimatedPaintExtent(
               duration: const Duration(milliseconds: 180),
               child: buildSearchOptions(context).toSliver(),
@@ -356,52 +303,14 @@ class PreSearchPage extends StatelessWidget {
   }
 
   Widget buildSuggestions(BuildContext context) {
-    bool check(String text, String key, String value) {
-      if (text.removeAllBlank == "") {
-        return false;
-      }
-      if (key.length >= text.length && key.substring(0, text.length) == text ||
-          (key.contains(" ") &&
-              key.split(" ").last.length >= text.length &&
-              key.split(" ").last.substring(0, text.length) == text)) {
-        return true;
-      } else if (value.length >= text.length && value.contains(text)) {
-        return true;
-      }
-      return false;
-    }
-
     return StateBuilder<PreSearchController>(
       builder: (logic) {
         void onSelected(String text, TranslationType? type) {
-          var words = controller.text.split(" ");
-          if (words.length >= 2 &&
-              check("${words[words.length - 2]} ${words[words.length - 1]}",
-                  text, text.translateTagsToCN)) {
-            controller.text = controller.text.replaceLast(
-                "${words[words.length - 2]} ${words[words.length - 1]}", "");
-          } else {
-            controller.text =
-                controller.text.replaceLast(words[words.length - 1], "");
-          }
-          if (text.contains(" ")) {
-            if (logic.target == '3' &&
-                ["male", "female", "language"].contains(type?.name)) {
-              text = text.replaceAll(" ", '_');
-              text = "${type?.name}:$text";
-            } else {
-              text = "\"$text\"";
-            }
-          }
-          if (logic.target == '1') {
-            if (type != null) {
-              controller.text += "${type.name}:$text ";
-            } else {
-              controller.text += "$text ";
-            }
-          } else {
-            controller.text += "$text ";
-          }
+          queryController.selectSuggestion(
+            SearchTag(text, namespace: type?.name),
+            translation: text.translateTagsToCN,
+          );
+          logic.suggestions.clear();
           logic.update([1, 100]);
           _focusNode.requestFocus();
         }
@@ -462,17 +371,24 @@ class PreSearchPage extends StatelessWidget {
               title: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(value.left),
+                  Expanded(
+                    child: Text(value.left,
+                        maxLines: 2, overflow: TextOverflow.ellipsis),
+                  ),
                   if (!showMethod)
                     const SizedBox(
                       width: 12,
                     ),
                   if (!showMethod && showTranslation)
-                    Text(
-                      subTitle,
-                      style: TextStyle(
-                          fontSize: 14,
-                          color: Theme.of(context).colorScheme.outline),
+                    Flexible(
+                      child: Text(
+                        subTitle,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: 14,
+                            color: Theme.of(context).colorScheme.outline),
+                      ),
                     )
                 ],
               ),
@@ -540,7 +456,7 @@ class PreSearchPage extends StatelessWidget {
             label: Text(text),
             selected: logic.target == id,
             onSelected: (b) {
-              logic.updateTarget(id);
+              selectTarget(id);
             },
           ),
         );
@@ -579,11 +495,19 @@ class PreSearchPage extends StatelessWidget {
             const SizedBox(
               width: 16,
             ),
-            Select(
-              initialValue: languages.indexOf(searchController.language ?? ""),
-              onChange: (i) => searchController.language = languages[i],
-              values: languages,
-              outline: true,
+            DropdownButton<String>(
+              value: queryController.language ?? '',
+              items: [
+                DropdownMenuItem(value: '', child: Text('不限'.tl)),
+                for (final language in {
+                  ...languages,
+                  if (queryController.language != null)
+                    queryController.language!,
+                })
+                  DropdownMenuItem(value: language, child: Text(language)),
+              ],
+              onChanged: (value) => queryController
+                  .setLanguage(value == null || value.isEmpty ? null : value),
             ),
           ],
         ),
@@ -596,9 +520,14 @@ class PreSearchPage extends StatelessWidget {
         var children = <Widget>[];
         if (logic.searchPageData.customOptionsBuilder != null) {
           children.add(
-            logic.searchPageData.customOptionsBuilder!(context, [], (options) {
-              logic.options = options;
-            }),
+            KeyedSubtree(
+              key: ValueKey((logic.target, logic.optionsRevision)),
+              child: logic.searchPageData.customOptionsBuilder!(
+                  context, List.of(logic.options), (options) {
+                logic.options = List.of(options);
+                logic.update(['search-bar']);
+              }),
+            ),
           );
         } else {
           final searchOptions =
@@ -720,7 +649,10 @@ class PreSearchPage extends StatelessWidget {
             _ => tag.split(':').first
           };
           final keyword = tag.substring(tag.indexOf(':') + 1);
-          search(keyword, type);
+          context.to(() => SearchResultPage.forTag(
+                tag: keyword,
+                sourceKey: type,
+              ));
         },
       ),
     );

@@ -162,8 +162,8 @@ class PicacgComicPage extends BaseComicPage<ComicItem> {
       );
     } else {
       context.to(
-        () => SearchResultPage(
-          keyword: tag,
+        () => SearchResultPage.forTag(
+          tag: tag,
           sourceKey: sourceKey,
         ),
       );

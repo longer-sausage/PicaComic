@@ -87,8 +87,8 @@ class CategoryPage extends StatelessWidget {
   ) {
     if (type == 'search') {
       App.mainNavigatorKey?.currentContext?.to(
-        () => SearchResultPage(
-          keyword: tag,
+        () => SearchResultPage.forTag(
+          tag: tag,
           options: const [],
           sourceKey: findComicSourceKey(),
         ),
@@ -98,8 +98,8 @@ class CategoryPage extends StatelessWidget {
         tag = '"$tag"';
       }
       App.mainNavigatorKey?.currentContext?.to(
-        () => SearchResultPage(
-          keyword: "$namespace:$tag",
+        () => SearchResultPage.forTag(
+          tag: "$namespace:$tag",
           options: const [],
           sourceKey: findComicSourceKey(),
         ),

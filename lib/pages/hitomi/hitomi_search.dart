@@ -1,12 +1,13 @@
-import 'dart:math';
-
 import 'package:flutter/material.dart';
 import 'package:pica_comic/components/components.dart';
+import 'package:pica_comic/base.dart';
+import 'package:pica_comic/components/search_query_bar.dart';
+import 'package:pica_comic/foundation/search_query.dart';
+import 'package:pica_comic/foundation/search_query_controller.dart';
 import 'package:pica_comic/network/hitomi_network/hitomi_main_network.dart';
 import 'package:pica_comic/network/hitomi_network/hitomi_models.dart';
 import 'package:shimmer_animation/shimmer_animation.dart';
 
-import '../../foundation/app.dart';
 import '../../network/res.dart';
 
 class SearchPageComicList extends StatefulWidget {
@@ -46,8 +47,10 @@ class _SearchPageComicListState
 }
 
 class HitomiSearchPage extends StatefulWidget {
-  const HitomiSearchPage(this.keyword, {Key? key}) : super(key: key);
+  const HitomiSearchPage(this.keyword, {this.query, Key? key})
+      : super(key: key);
   final String keyword;
+  final SearchQuery? query;
 
   @override
   State<HitomiSearchPage> createState() => _HitomiSearchPageState();
@@ -55,67 +58,58 @@ class HitomiSearchPage extends StatefulWidget {
 
 class _HitomiSearchPageState extends State<HitomiSearchPage> {
   late String keyword;
-  var controller = TextEditingController();
+  late final SearchQueryController controller;
 
   @override
   void initState() {
-    keyword = widget.keyword;
     super.initState();
+    controller =
+        SearchQueryController(text: widget.keyword, query: widget.query);
+    controller.configureLanguageFilter(
+      enabled: true,
+      defaultLanguage: appdata.defaultSearchLanguage,
+    );
+    keyword = controller.query.keywordFor('hitomi');
+    controller.addListener(queryChanged);
+  }
+
+  void queryChanged() => setState(() {});
+
+  @override
+  void dispose() {
+    controller.removeListener(queryChanged);
+    controller.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    controller.text = keyword;
-    return SearchPageComicList(
-      keyword: keyword,
-      key: Key(keyword),
-      head: SliverPersistentHeader(
-        floating: true,
-        delegate: _SliverAppBarDelegate(
-          minHeight: 60,
-          maxHeight: 0,
-          child: FloatingSearchBar(
-            onSearch: (s) {
-              App.back(context);
-              if (s == "") return;
-              setState(() {
-                keyword = s;
-              });
-            },
-            controller: controller,
-          ),
+    return Scaffold(
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            SearchQueryBar(
+              sourceKey: 'hitomi',
+              options: const [],
+              onSearch: () {
+                setState(() {
+                  keyword = controller.query.keywordFor('hitomi');
+                });
+              },
+              controller: controller,
+            ),
+            Expanded(
+              child: SearchPageComicList(
+                keyword: keyword,
+                key: Key(keyword),
+                head: const SliverToBoxAdapter(child: SizedBox.shrink()),
+              ),
+            ),
+          ],
         ),
       ),
-    ).paddingTop(context.padding.top);
-  }
-}
-
-class _SliverAppBarDelegate extends SliverPersistentHeaderDelegate {
-  _SliverAppBarDelegate(
-      {required this.child, required this.maxHeight, required this.minHeight});
-
-  final double minHeight;
-  final double maxHeight;
-  final Widget child;
-
-  @override
-  Widget build(
-      BuildContext context, double shrinkOffset, bool overlapsContent) {
-    return SizedBox.expand(
-      child: child,
     );
-  }
-
-  @override
-  double get maxExtent => minHeight;
-
-  @override
-  double get minExtent => max(maxHeight, minHeight);
-
-  @override
-  bool shouldRebuild(SliverPersistentHeaderDelegate oldDelegate) {
-    return maxHeight != oldDelegate.maxExtent ||
-        minHeight != oldDelegate.minExtent;
   }
 }
 

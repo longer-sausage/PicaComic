@@ -107,6 +107,7 @@ abstract class LoadingState<T extends StatefulWidget, S extends Object>
       error = null;
     });
     loadData().then((value) {
+      if (!mounted) return;
       if (value.success) {
         setState(() {
           isLoading = false;
@@ -145,7 +146,9 @@ abstract class LoadingState<T extends StatefulWidget, S extends Object>
   void initState() {
     isLoading = true;
     Future.microtask(() {
+      if (!mounted) return;
       loadData().then((value) {
+        if (!mounted) return;
         if (value.success) {
           setState(() {
             isLoading = false;

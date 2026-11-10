@@ -11,6 +11,7 @@ import 'package:pica_comic/components/components.dart';
 import 'package:pica_comic/foundation/app.dart';
 import 'package:pica_comic/foundation/history.dart';
 import 'package:pica_comic/foundation/log.dart';
+import 'package:pica_comic/foundation/search_query.dart';
 import 'package:pica_comic/network/update.dart';
 import 'package:pica_comic/tools/extensions.dart';
 import '../base.dart';
@@ -156,7 +157,8 @@ class ComicSource {
 
   final RegExp? idMatcher;
 
-  final Widget Function(BuildContext context, String id, String? cover)? comicPageBuilder;
+  final Widget Function(BuildContext context, String id, String? cover)?
+      comicPageBuilder;
 
   Future<void> loadData() async {
     var file = File("${App.dataPath}/comic_source/$key.data");
@@ -388,10 +390,10 @@ class SearchPageData {
   /// If this is not null, the default value of search options will be first element.
   final List<SearchOptions>? searchOptions;
 
-  final Widget Function(BuildContext, List<String> initialValues, void Function(List<String>))?
-      customOptionsBuilder;
+  final Widget Function(BuildContext, List<String> initialValues,
+      void Function(List<String>))? customOptionsBuilder;
 
-  final Widget Function(String keyword, List<String> options)?
+  final Widget Function(SearchQuery query, List<String> options)?
       overrideSearchResultBuilder;
 
   final SearchFunction? loadPage;
@@ -414,6 +416,17 @@ class SearchPageData {
     this.overrideSearchResultBuilder,
     this.enableTagsSuggestions = false,
   });
+
+  List<String> normalizeOptions(List<String> values) {
+    final definitions = searchOptions;
+    if (definitions == null) return List.of(values);
+    return List.generate(definitions.length, (index) {
+      final option = definitions[index];
+      return index < values.length && option.options.containsKey(values[index])
+          ? values[index]
+          : option.defaultValue;
+    });
+  }
 }
 
 class SearchOptions {

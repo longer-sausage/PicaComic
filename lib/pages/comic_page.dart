@@ -202,8 +202,8 @@ class _ComicPageImpl extends BaseComicPage<ComicInfoData> {
   @override
   void tapOnTag(String tag, String key) {
     context.to(
-      () => SearchResultPage(
-        keyword: tag,
+      () => SearchResultPage.forTag(
+        tag: tag,
         options: const [],
         sourceKey: sourceKey,
       ),

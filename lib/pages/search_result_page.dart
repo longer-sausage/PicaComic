@@ -5,11 +5,13 @@ import 'package:flutter/rendering.dart';
 import 'package:pica_comic/base.dart';
 import 'package:pica_comic/comic_source/comic_source.dart';
 import 'package:pica_comic/components/components.dart';
+import 'package:pica_comic/components/search_query_bar.dart';
 import 'package:pica_comic/foundation/app.dart';
 import 'package:pica_comic/foundation/pair.dart';
+import 'package:pica_comic/foundation/search_query.dart';
+import 'package:pica_comic/foundation/search_query_controller.dart';
 import 'package:pica_comic/network/base_comic.dart';
 import 'package:pica_comic/network/res.dart';
-import 'package:pica_comic/tools/extensions.dart';
 import 'package:pica_comic/tools/tags_translation.dart';
 import 'package:pica_comic/tools/translations.dart';
 
@@ -51,7 +53,23 @@ class SearchResultPage extends StatelessWidget {
     required this.keyword,
     this.options = const [],
     required this.sourceKey,
+    this.query,
+    this.initialTags = const [],
   });
+
+  factory SearchResultPage.forTag({
+    Key? key,
+    required String tag,
+    required String sourceKey,
+    List<String> options = const [],
+  }) =>
+      SearchResultPage(
+        key: key,
+        keyword: '',
+        initialTags: [SearchTag.fromKeyword(tag, sourceKey: sourceKey)],
+        options: options,
+        sourceKey: sourceKey,
+      );
 
   final String keyword;
 
@@ -59,25 +77,31 @@ class SearchResultPage extends StatelessWidget {
 
   final String sourceKey;
 
+  final SearchQuery? query;
+  final List<SearchTag> initialTags;
+
   @override
   Widget build(BuildContext context) {
     var comicSource =
         ComicSource.find(sourceKey) ?? (throw "source $sourceKey not found");
-    var options = this.options;
-    if (comicSource.searchPageData?.searchOptions != null) {
-      var searchOptions = comicSource.searchPageData!.searchOptions!;
-      if (searchOptions.length != options.length) {
-        options = searchOptions.map((e) => e.defaultValue).toList();
-      }
-    }
+    final data = comicSource.searchPageData!;
+    final options = data.normalizeOptions(this.options);
+    final editor = SearchQueryController(
+        text: keyword, query: query, initialTags: initialTags);
+    editor.configureLanguageFilter(
+      enabled: data.enableLanguageFilter,
+      defaultLanguage: appdata.defaultSearchLanguage,
+    );
+    final initialQuery = editor.query;
+    editor.dispose();
     if (comicSource.searchPageData?.overrideSearchResultBuilder != null) {
       return comicSource.searchPageData!.overrideSearchResultBuilder!(
-        keyword,
+        initialQuery,
         options,
       );
     } else {
       return _SearchResultPage(
-        keyword: keyword,
+        query: initialQuery,
         options: options,
         sourceKey: sourceKey,
       );
@@ -87,12 +111,12 @@ class SearchResultPage extends StatelessWidget {
 
 class _SearchResultPage extends StatefulWidget {
   const _SearchResultPage({
-    required this.keyword,
+    required this.query,
     required this.options,
     required this.sourceKey,
   });
 
-  final String keyword;
+  final SearchQuery query;
 
   final List<String> options;
 
@@ -103,9 +127,10 @@ class _SearchResultPage extends StatefulWidget {
 }
 
 class _SearchResultPageState extends State<_SearchResultPage> {
-  var controller = TextEditingController();
+  late final SearchQueryController queryController;
+  final focusNode = FocusNode();
   bool _showFab = true;
-  late String keyword = widget.keyword;
+  late String keyword;
 
   OverlayEntry? get suggestionOverlay => suggestionsController.entry;
   late _SuggestionsController suggestionsController;
@@ -114,28 +139,36 @@ class _SearchResultPageState extends State<_SearchResultPage> {
 
   @override
   void initState() {
-    controller.text = keyword.trim();
-    if (!keyword.contains('language') &&
-        ComicSource.find(sourceKey)?.searchPageData?.enableLanguageFilter ==
-            true) {
-      var lang = int.tryParse(appdata.settings[69]) ?? 0;
-      if (lang != 0) {
-        keyword += " language:${["chinese", "english", "japanese"][lang - 1]}";
-      }
-    }
-    suggestionsController = _SuggestionsController(controller);
     super.initState();
+    queryController = SearchQueryController(query: widget.query);
+    queryController.configureLanguageFilter(
+      enabled:
+          ComicSource.find(sourceKey)!.searchPageData!.enableLanguageFilter,
+    );
+    keyword = queryController.query.keywordFor(sourceKey);
+    suggestionsController = _SuggestionsController(queryController, focusNode);
+    queryController.addListener(queryChanged);
+  }
+
+  void queryChanged() {
+    setState(() {});
+    suggestionOverlay?.markNeedsBuild();
   }
 
   @override
   void dispose() {
-    if (suggestionOverlay != null) {
-      suggestionsController.remove();
-    }
+    suggestionsController.remove();
+    queryController.removeListener(queryChanged);
+    queryController.dispose();
+    focusNode.dispose();
     super.dispose();
   }
 
   void onChanged(String s) {
+    if (!ComicSource.find(sourceKey)!.searchPageData!.enableTagsSuggestions) {
+      suggestionsController.remove();
+      return;
+    }
     suggestionsController.findSuggestions();
     if (suggestionOverlay != null) {
       if (suggestionsController.suggestions.isEmpty) {
@@ -147,7 +180,8 @@ class _SearchResultPageState extends State<_SearchResultPage> {
       suggestionsController.entry = OverlayEntry(
         builder: (context) {
           return Positioned(
-            top: context.padding.top + 56 + 16,
+            top:
+                context.padding.top + SearchQueryBar.heightFor(queryController),
             left: 0,
             right: 0,
             bottom: 0,
@@ -163,18 +197,19 @@ class _SearchResultPageState extends State<_SearchResultPage> {
     }
   }
 
-  void update() {
-    if (controller.text != keyword) {
-      setState(() {
-        keyword = controller.text;
-      });
-    }
+  void search() {
+    suggestionsController.suggestions.clear();
+    suggestionsController.remove();
+    focusNode.unfocus();
+    final query = queryController.query.keywordFor(sourceKey);
+    if (keyword == query) return;
+    setState(() => keyword = query);
   }
 
   @override
   Widget build(BuildContext context) {
     Widget trailing;
-    if (context.width < 400) {
+    if (context.width < 600) {
       trailing = Button.icon(
         icon: const Icon(Icons.more_horiz),
         onPressed: more,
@@ -201,17 +236,18 @@ class _SearchResultPageState extends State<_SearchResultPage> {
     return Scaffold(
       floatingActionButton: _showFab
           ? FloatingActionButton(
+              onPressed: search,
               child: const Icon(Icons.search),
-              onPressed: () {
-                var s = controller.text;
-                setState(() {
-                  keyword = s;
-                });
-              },
             )
           : null,
       body: NotificationListener<ScrollUpdateNotification>(
         onNotification: (notification) {
+          if (notification.depth != 0 ||
+              notification.metrics.axis != Axis.vertical ||
+              notification.scrollDelta == null ||
+              notification.scrollDelta == 0) {
+            return false;
+          }
           if (suggestionsController.entry != null) {
             suggestionsController.remove();
           }
@@ -236,18 +272,14 @@ class _SearchResultPageState extends State<_SearchResultPage> {
             pinned: _showFab && SmoothScrollProvider.isMouseScroll,
             floating: !SmoothScrollProvider.isMouseScroll,
             delegate: _SliverAppBarDelegate(
-              minHeight: 60,
-              maxHeight: 60,
-              child: FloatingSearchBar(
-                onSearch: (s) {
-                  suggestionsController.suggestions.clear();
-                  suggestionsController.remove();
-                  if (s == keyword) return;
-                  setState(() {
-                    keyword = s;
-                  });
-                },
-                controller: controller,
+              minHeight: SearchQueryBar.heightFor(queryController),
+              maxHeight: SearchQueryBar.heightFor(queryController),
+              child: SearchQueryBar(
+                onSearch: search,
+                controller: queryController,
+                focusNode: focusNode,
+                sourceKey: sourceKey,
+                options: options,
                 onChanged: onChanged,
                 trailing: trailing,
               ),
@@ -323,13 +355,19 @@ class _SearchResultPageState extends State<_SearchResultPage> {
                     context.pop();
                     var searchData =
                         ComicSource.find(sourceKey!)!.searchPageData!;
-                    options = (searchData.searchOptions ?? [])
-                        .map((e) => e.defaultValue)
-                        .toList();
+                    options = searchData.normalizeOptions([]);
+                    suggestionsController.remove();
+                    queryController.configureLanguageFilter(
+                      enabled: searchData.enableLanguageFilter,
+                      defaultLanguage: appdata.defaultSearchLanguage,
+                    );
+                    final query = queryController.query;
+                    final newKeyword = query.keywordFor(sourceKey!);
                     if (searchData.overrideSearchResultBuilder != null) {
                       this.context.off(() {
                         return SearchResultPage(
-                          keyword: keyword,
+                          keyword: newKeyword,
+                          query: query,
                           options: options,
                           sourceKey: sourceKey!,
                         );
@@ -337,6 +375,7 @@ class _SearchResultPageState extends State<_SearchResultPage> {
                     } else {
                       this.setState(() {
                         this.sourceKey = sourceKey!;
+                        keyword = newKeyword;
                       });
                     }
                   }
@@ -390,7 +429,9 @@ class _SliverAppBarDelegate extends SliverPersistentHeaderDelegate {
 
   @override
   bool shouldRebuild(SliverPersistentHeaderDelegate oldDelegate) {
-    return maxHeight != oldDelegate.maxExtent ||
+    return oldDelegate is! _SliverAppBarDelegate ||
+        child != oldDelegate.child ||
+        maxHeight != oldDelegate.maxExtent ||
         minHeight != oldDelegate.minExtent;
   }
 }
@@ -398,7 +439,8 @@ class _SliverAppBarDelegate extends SliverPersistentHeaderDelegate {
 class _SuggestionsController {
   _SuggestionsState? _state;
 
-  final TextEditingController controller;
+  final SearchQueryController controller;
+  final FocusNode focusNode;
 
   OverlayEntry? entry;
 
@@ -408,38 +450,25 @@ class _SuggestionsController {
 
   void remove() {
     entry?.remove();
+    entry?.dispose();
     entry = null;
   }
 
   var suggestions = <Pair<String, TranslationType>>[];
 
   void findSuggestions() {
-    var text = controller.text.split(" ").last;
+    var text = controller.suggestionText;
     var suggestions = this.suggestions;
 
     suggestions.clear();
-
-    bool check(String text, String key, String value) {
-      if (text.removeAllBlank == "") {
-        return false;
-      }
-      if (key.length >= text.length && key.substring(0, text.length) == text ||
-          (key.contains(" ") &&
-              key.split(" ").last.length >= text.length &&
-              key.split(" ").last.substring(0, text.length) == text)) {
-        return true;
-      } else if (value.length >= text.length && value.contains(text)) {
-        return true;
-      }
-      return false;
-    }
 
     void find(Map<String, String> map, TranslationType type) {
       for (var element in map.entries) {
         if (suggestions.length > 200) {
           break;
         }
-        if (check(text, element.key, element.value)) {
+        if (SearchQueryController.matchesSuggestion(
+            text, element.key, element.value)) {
           suggestions.add(Pair(element.key, type));
         }
       }
@@ -457,7 +486,7 @@ class _SuggestionsController {
     find(TagsTranslation.cosplayerTags, TranslationType.cosplayer);
   }
 
-  _SuggestionsController(this.controller);
+  _SuggestionsController(this.controller, this.focusNode);
 }
 
 class _Suggestions extends StatefulWidget {
@@ -490,6 +519,12 @@ class _SuggestionsState extends State<_Suggestions> {
   }
 
   @override
+  void dispose() {
+    widget.controller._state = null;
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return buildSuggestions(context);
   }
@@ -516,10 +551,15 @@ class _SuggestionsState extends State<_Suggestions> {
                 width: 12,
               ),
             if (!showMethod && showTranslation)
-              Text(
-                subTitle,
-                style: TextStyle(
-                    fontSize: 14, color: Theme.of(context).colorScheme.outline),
+              Flexible(
+                child: Text(
+                  subTitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 14,
+                      color: Theme.of(context).colorScheme.outline),
+                ),
               )
           ],
         ),
@@ -575,40 +615,14 @@ class _SuggestionsState extends State<_Suggestions> {
     );
   }
 
-  bool check(String text, String key, String value) {
-    if (text.removeAllBlank == "") {
-      return false;
-    }
-    if (key.length >= text.length && key.substring(0, text.length) == text ||
-        (key.contains(" ") &&
-            key.split(" ").last.length >= text.length &&
-            key.split(" ").last.substring(0, text.length) == text)) {
-      return true;
-    } else if (value.length >= text.length && value.contains(text)) {
-      return true;
-    }
-    return false;
-  }
-
   void onSelected(String text, TranslationType? type) {
-    var controller = widget.controller.controller;
-    var words = controller.text.split(" ");
-    if (words.length >= 2 &&
-        check("${words[words.length - 2]} ${words[words.length - 1]}", text,
-            text.translateTagsToCN)) {
-      controller.text = controller.text.replaceLast(
-          "${words[words.length - 2]} ${words[words.length - 1]}", "");
-    } else {
-      controller.text =
-          controller.text.replaceLast(words[words.length - 1], "");
-    }
-    if (type != null) {
-      controller.text += "${type.name}:$text ";
-    } else {
-      controller.text += "$text ";
-    }
+    widget.controller.controller.selectSuggestion(
+      SearchTag(text, namespace: type?.name),
+      translation: text.translateTagsToCN,
+    );
     widget.controller.suggestions.clear();
     widget.controller.remove();
+    widget.controller.focusNode.requestFocus();
   }
 }
 
@@ -637,11 +651,7 @@ class _SearchOptionsState extends State<_SearchOptions> {
   @override
   void initState() {
     data = ComicSource.find(widget.sourceKey)!.searchPageData!;
-    options = widget.current;
-    if (data.searchOptions != null &&
-        options.length != data.searchOptions!.length) {
-      options = data.searchOptions!.map((e) => e.defaultValue).toList();
-    }
+    options = data.normalizeOptions(widget.current);
     super.initState();
   }
 

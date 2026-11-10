@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:pica_comic/foundation/app.dart';
 import 'package:pica_comic/foundation/log.dart';
+import 'package:pica_comic/foundation/search_query.dart';
 import 'package:pica_comic/network/jm_network/jm_network.dart';
 import 'package:pica_comic/network/download.dart';
 import 'package:pica_comic/network/webdav.dart';
@@ -23,6 +26,48 @@ class Appdata {
   ///搜索历史
   List<String> searchHistory = [];
   Set<String> favoriteTags = {};
+
+  final favoriteSearches = ValueNotifier<List<SavedSearch>>([]);
+
+  String? get defaultSearchLanguage => switch (settings[69]) {
+        '1' => 'chinese',
+        '2' => 'english',
+        '3' => 'japanese',
+        _ => null,
+      };
+
+  Future<void> writeFavoriteSearches({bool sync = true}) async {
+    final preferences = await SharedPreferences.getInstance();
+    final saved = await preferences.setString(
+        'favoriteSearches', jsonEncode(favoriteSearches.value));
+    if (!saved) throw StateError('Failed to save favorite searches');
+    if (sync && settings[45].isNotEmpty) unawaited(Webdav.uploadData());
+  }
+
+  Future<void> toggleFavoriteSearch(SavedSearch search) async {
+    final searches = [...favoriteSearches.value];
+    if (!searches.remove(search)) searches.insert(0, search);
+    await _replaceFavoriteSearches(searches);
+  }
+
+  Future<void> removeFavoriteSearch(SavedSearch search) async {
+    await _replaceFavoriteSearches(
+        favoriteSearches.value.where((item) => item != search));
+  }
+
+  Future<void> _replaceFavoriteSearches(Iterable<SavedSearch> searches) async {
+    final previous = favoriteSearches.value;
+    final next = List<SavedSearch>.unmodifiable(searches);
+    favoriteSearches.value = next;
+    try {
+      await writeFavoriteSearches();
+    } catch (_) {
+      if (identical(favoriteSearches.value, next)) {
+        favoriteSearches.value = previous;
+      }
+      rethrow;
+    }
+  }
 
   ///历史记录管理器, 可以通过factory构造函数访问, 也可以通过这里访问
   var history = HistoryManager();
@@ -211,13 +256,12 @@ class Appdata {
   }
 
   Future<void> writeData([bool sync = true]) async {
-    if (sync) {
-      Webdav.uploadData();
-    }
     var s = await SharedPreferences.getInstance();
-    await updateSettings();
+    await updateSettings(false);
     await s.setStringList("blockingKeyword", blockingKeyword);
     await s.setStringList("firstUse", firstUse);
+    await writeFavoriteSearches(sync: false);
+    if (sync) unawaited(Webdav.uploadData());
   }
 
   Future<bool> readData() async {
@@ -226,6 +270,14 @@ class Appdata {
       await readSettings(s);
       searchHistory = s.getStringList("search") ?? [];
       favoriteTags = (s.getStringList("favoriteTags") ?? []).toSet();
+      final savedSearches = s.getString('favoriteSearches');
+      try {
+        favoriteSearches.value = savedSearches == null
+            ? []
+            : SavedSearch.decodeList(jsonDecode(savedSearches));
+      } on FormatException {
+        favoriteSearches.value = [];
+      }
       blockingKeyword = s.getStringList("blockingKeyword") ?? [];
       if (s.getStringList("firstUse") != null) {
         var st = s.getStringList("firstUse")!;
@@ -245,9 +297,11 @@ class Appdata {
         "firstUse": firstUse,
         "blockingKeywords": blockingKeyword,
         "favoriteTags": favoriteTags.toList(),
+        "favoriteSearches":
+            favoriteSearches.value.map((search) => search.toJson()).toList(),
       };
 
-  bool readDataFromJson(Map<String, dynamic> json) {
+  Future<bool> readDataFromJson(Map<String, dynamic> json) async {
     try {
       var newSettings = List<String>.from(json["settings"]);
       var downloadPath = settings[22];
@@ -265,12 +319,21 @@ class Appdata {
         history.readDataFromJson(json["history"]);
       }
       // merge data
-      blockingKeyword = Set<String>.from(
-              ((json["blockingKeywords"] ?? []) + blockingKeyword) as List)
-          .toList();
-      favoriteTags =
-          Set.from((json["favoriteTags"] ?? []) + List.from(favoriteTags));
-      writeData(false);
+      blockingKeyword = {
+        ...List<String>.from(json['blockingKeywords'] ?? const []),
+        ...blockingKeyword,
+      }.toList();
+      favoriteTags = {
+        ...List<String>.from(json['favoriteTags'] ?? const []),
+        ...favoriteTags,
+      };
+      // Snapshots include deletions. Merging lists here would resurrect a
+      // search removed on another device. Older backups leave this field alone.
+      if (json['favoriteSearches'] is List) {
+        favoriteSearches.value =
+            SavedSearch.decodeList(json['favoriteSearches']);
+      }
+      await writeData(false);
       return true;
     } catch (e, s) {
       LogManager.addLog(LogLevel.error, "Appdata.readDataFromJson",
@@ -364,9 +427,7 @@ class _Settings {
   }
 
   String get jmImgUrlIndex =>
-      int.parse(appdata.settings[37]) < 4
-        ? appdata.settings[37]
-        : "0";
+      int.parse(appdata.settings[37]) < 4 ? appdata.settings[37] : "0";
 
   List<String> get explorePages => appdata.settings[77].split(',');
 
