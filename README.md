@@ -40,9 +40,15 @@ Pushing a new or updated Git tag runs `.github/workflows/release.yml`. It builds
 Android APKs (arm64, x86_64 and universal), a Windows x64 ZIP, a Linux x64 tarball,
 an unsigned iOS IPA, and a macOS ZIP with Flutter 3.41.6. Once every build succeeds,
 the packages are published to the tag's GitHub Release with an empty body.
-Re-running the workflow or updating the same tag replaces assets with matching
-names and clears the release body. Deleting a tag does not publish a release.
-Package versions come from `pubspec.yaml`; update it before creating a version tag.
+Re-running the workflow or updating the same tag replaces the generated packages,
+removes obsolete package filenames, and clears the release body. Deleting a tag
+does not publish a release.
+The tag is the source of the application version on every platform. Use
+`vMAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH`, for example `v1.0.1`. Before building,
+the workflow synchronizes `pubspec.yaml`, the in-app version display and update
+checker, native application metadata, and every package filename with the tag
+(without its optional `v` prefix). Invalid version tags fail before compilation.
+The separate numeric build number after `+` in `pubspec.yaml` is preserved.
 
 Configure these repository secrets under **Settings > Secrets and variables >
 Actions** before the first release, using the same Android signing key as local
@@ -55,12 +61,16 @@ release builds:
 | `ANDROID_KEY_ALIAS` | Signing key alias (`keyAlias`) |
 | `ANDROID_KEY_PASSWORD` | Signing key password (`keyPassword`) |
 
-After committing the workflow and updating the package version, publish a tag:
+After committing the changes, publish a version tag; no manual version edits are
+needed for automated releases:
 
 ```shell
-git tag v4.2.12
-git push origin v4.2.12
+git tag v1.0.1
+git push origin v1.0.1
 ```
+
+For a local build at the same version, run
+`python .github/scripts/set_release_version.py v1.0.1` before building.
 
 ## Introduction
 

@@ -44,6 +44,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
+      - name: Synchronize all application versions with the tag
+        run: python .github/scripts/set_release_version.py "$GITHUB_REF_NAME"
+
+      - name: Check release version synchronization
+        run: python -m unittest discover -s .github/scripts -p 'test_*.py'
+
       - name: Configure Android signing
         if: matrix.platform == 'android'
         shell: python
@@ -133,38 +139,38 @@ jobs:
       - name: Build Android APKs
         if: matrix.platform == 'android'
         run: |
-          flutter build apk --release --target-platform android-arm64,android-x64
+          flutter build apk --release --build-name "$APP_VERSION" --target-platform android-arm64,android-x64
           cp build/app/outputs/apk/release/*.apk dist/
 
       - name: Build Windows
         if: matrix.platform == 'windows'
-        run: flutter build windows --release
+        run: flutter build windows --release --build-name "$APP_VERSION"
 
       - name: Package Windows
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          & "$env:SystemRoot/System32/tar.exe" -a -c -f dist/PicaComic-windows-x64.zip -C build/windows/x64/runner/Release .
+          & "$env:SystemRoot/System32/tar.exe" -a -c -f "dist/PicaComic-${env:APP_VERSION}-windows-x64.zip" -C build/windows/x64/runner/Release .
 
       - name: Build Linux
         if: matrix.platform == 'linux'
         run: |
-          flutter build linux --release
-          tar -czf dist/PicaComic-linux-x64.tar.gz -C build/linux/x64/release/bundle .
+          flutter build linux --release --build-name "$APP_VERSION"
+          tar -czf "dist/PicaComic-${APP_VERSION}-linux-x64.tar.gz" -C build/linux/x64/release/bundle .
 
       - name: Build iOS (unsigned)
         if: matrix.platform == 'ios'
         run: |
-          flutter build ios --release --no-codesign
+          flutter build ios --release --build-name "$APP_VERSION" --no-codesign
           mkdir -p build/ios/iphoneos/Payload
           mv build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/
-          ditto -c -k --keepParent build/ios/iphoneos/Payload dist/PicaComic-ios-unsigned.ipa
+          ditto -c -k --keepParent build/ios/iphoneos/Payload "dist/PicaComic-${APP_VERSION}-ios-unsigned.ipa"
 
       - name: Build macOS
         if: matrix.platform == 'macos'
         run: |
-          flutter build macos --release
-          ditto -c -k --sequesterRsrc --keepParent build/macos/Build/Products/Release/pica_comic.app dist/PicaComic-macos.zip
+          flutter build macos --release --build-name "$APP_VERSION"
+          ditto -c -k --sequesterRsrc --keepParent build/macos/Build/Products/Release/pica_comic.app "dist/PicaComic-${APP_VERSION}-macos.zip"
 
       - name: Upload release packages
         uses: actions/upload-artifact@v7
@@ -215,4 +221,21 @@ jobs:
           fi
 
           gh release upload "$RELEASE_TAG" dist/* --clobber
+
+          # Remove our previous packages after the replacements are uploaded.
+          # This also removes legacy filenames when an existing tag is rebuilt.
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/release-assets.txt"
+          while IFS= read -r asset; do
+            case "$asset" in
+              PicaComic-*.apk|PicaComic-*-windows-x64.zip|PicaComic-windows-x64.zip|\
+              PicaComic-*-linux-x64.tar.gz|PicaComic-linux-x64.tar.gz|\
+              PicaComic-*-ios-unsigned.ipa|PicaComic-ios-unsigned.ipa|\
+              PicaComic-*-macos.zip|PicaComic-macos.zip)
+                if [ ! -f "dist/$asset" ]; then
+                  gh release delete-asset "$RELEASE_TAG" "$asset" --yes
+                fi
+                ;;
+            esac
+          done < "$RUNNER_TEMP/release-assets.txt"
+
           gh release edit "$RELEASE_TAG" --draft=false --title "$RELEASE_TAG" --notes ""
