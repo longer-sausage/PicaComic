@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:pica_comic/components/components.dart';
 import 'package:pica_comic/foundation/app.dart';
+import 'package:pica_comic/foundation/def.dart';
 import 'package:pica_comic/network/http_client.dart';
 import 'package:pica_comic/pages/webview.dart';
 import 'package:pica_comic/tools/translations.dart';
@@ -24,6 +25,7 @@ Future<HtMangaWebSession?> htMangaWebLogin(
   final origin = Uri.parse(baseUrl);
   final loginUrl = origin.resolve('/users-login.html').toString();
   final logoutUrl = origin.resolve('/users-logout.html').toString();
+  final favoritesUrl = origin.resolve('/users-users_fav.html').toString();
   final result = Completer<HtMangaWebSession?>();
   Timer? timer;
   var checking = false;
@@ -75,7 +77,13 @@ Future<HtMangaWebSession?> htMangaWebLogin(
       await evaluate('''
         (function() {
           var form = document.getElementById('login_form');
-          if (!form || form.dataset.picaLogin) return;
+          if (!form || form.dataset.picaLogin || !window.Mui || !Mui.box ||
+              !Mui.form || !Mui.form.sendAuto) return;
+          // The website normally submits from a popup. Give its successful
+          // login callback a destination when opened as a standalone page.
+          Mui.box.callback = function() {
+            location.replace(${jsonEncode(favoritesUrl)});
+          };
           form.dataset.picaLogin = '1';
           form.querySelector('[name="login_name"]').value = ${jsonEncode(account)};
           form.querySelector('[name="login_pass"]').value = ${jsonEncode(password)};
@@ -106,6 +114,9 @@ Future<HtMangaWebSession?> htMangaWebLogin(
         () => AppWebview(
           initialUrl: logoutUrl,
           singlePage: true,
+          // The app parses desktop HTML and checks its authenticated menu.
+          // Keep the browser and subsequent HTTP requests on that template.
+          userAgent: webUA,
           onStarted: (controller) {
             if (result.isCompleted) return;
             timer = Timer.periodic(const Duration(seconds: 1), (_) {

@@ -26,6 +26,7 @@ void main() {
   late bool completeWebLogin;
   late String browserCookie;
   late String submittedScript;
+  late String? loginSuccessUrl;
   var viewId = 0;
   var imageRequests = 0;
   final requests = <HttpHeaders>[];
@@ -55,6 +56,7 @@ void main() {
     completeWebLogin = true;
     browserCookie = 'verified-session';
     submittedScript = '';
+    loginSuccessUrl = null;
     imageRequests = 0;
     requests.clear();
     htManga.data.clear();
@@ -117,7 +119,9 @@ void main() {
             return jsonEncode({
               'url': pageUrl,
               'ready': 'complete',
-              'authenticated': authenticated,
+              // An AJAX login does not update the standalone form's menu.
+              'authenticated':
+                  authenticated && pageUrl == '$baseUrl/users-users_fav.html',
               'userAgent': 'Ht-Test-UA',
             });
           }
@@ -125,8 +129,15 @@ void main() {
             pageUrl = '$baseUrl/users-login.html';
           } else if (script.contains('form.dataset.picaLogin')) {
             submittedScript = script;
+            final callback = RegExp(
+              r'Mui\.box\.callback\s*=\s*function\(\)\s*\{\s*location\.replace\(("[^"]*")\)',
+            ).firstMatch(script);
+            loginSuccessUrl =
+                callback == null ? null : jsonDecode(callback[1]!) as String;
             authenticated = true;
-            pageUrl = '$baseUrl/albums.html';
+            // Match the site's popup-oriented success response: without an
+            // explicit callback the form stays open even with valid cookies.
+            pageUrl = loginSuccessUrl ?? pageUrl;
           }
           return null;
         case 'getAllCookies':
@@ -172,6 +183,7 @@ void main() {
     expect(submittedScript, contains(jsonEncode('test"user')));
     expect(submittedScript, contains(jsonEncode('test\\password')));
     expect(htManga.data['userAgent'], 'Ht-Test-UA');
+    expect(loginSuccessUrl, '$baseUrl/users-users_fav.html');
     final comics =
         await HtmangaNetwork().getComicList('$baseUrl/albums.html', 1);
     expect(comics.error, isFalse);
