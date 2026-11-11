@@ -32,11 +32,13 @@ class HtMangaParser {
   static List<String> galleryImages(String source, String baseUrl) {
     // The gallery endpoint returns JavaScript containing document.writeln calls.
     // Decode the string literals first so signatures and escaped '&' survive.
-    final writes = RegExp(
-      r'document\.write(?:ln)?\(\s*("(?:[^"\\]|\\.)*")\s*\)',
-    ).allMatches(source);
+    final writes = _readStrings(
+      source,
+      RegExp(r'document\.write(?:ln)?\(\s*"'),
+      suffix: RegExp(r'\s*\)'),
+    ).toList();
     if (writes.isNotEmpty) {
-      source = writes.map((match) => _decodeString(match[1]!)).join('\n');
+      source = writes.join('\n');
     }
     final list = RegExp(
       r'\bimglist\s*=\s*(\[[\s\S]*?\])\s*;',
@@ -44,12 +46,12 @@ class HtMangaParser {
     if (list == null) {
       throw const FormatException('未获取到漫画图片');
     }
-    final urls = RegExp(
-      r'''\burl\s*:\s*(?:fast_img_host\s*\+\s*)?("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')''',
+    final urls = _readStrings(
+      list,
+      RegExp(r'''\burl\s*:\s*(?:fast_img_host\s*\+\s*)?["']'''),
     );
     final images = <String>{};
-    for (final match in urls.allMatches(list)) {
-      final value = _decodeString(match[1]!);
+    for (final value in urls) {
       final url = resolveUrl(value, baseUrl);
       final path = Uri.parse(url).path;
       if (RegExp(
@@ -65,6 +67,30 @@ class HtMangaParser {
       throw const FormatException('未获取到漫画图片');
     }
     return images.toList();
+  }
+
+  static Iterable<String> _readStrings(String source, RegExp prefix,
+      {RegExp? suffix}) sync* {
+    // Prefixes end at the opening quote. Scan the body iteratively: repeated
+    // regex alternatives can overflow the AOT regex stack on large galleries.
+    var offset = 0;
+    for (final match in prefix.allMatches(source)) {
+      if (match.start < offset) continue;
+      final start = match.end - 1;
+      final quote = source.codeUnitAt(start);
+      var end = start + 1;
+      while (end < source.length && source.codeUnitAt(end) != quote) {
+        if (source.codeUnitAt(end) == 0x5c) end++;
+        end++;
+      }
+      if (end >= source.length) {
+        throw const FormatException('Unterminated JavaScript string');
+      }
+      offset = end + 1;
+      if (suffix == null || suffix.matchAsPrefix(source, offset) != null) {
+        yield _decodeString(source.substring(start, offset));
+      }
+    }
   }
 
   static String _decodeString(String literal) {

@@ -109,6 +109,45 @@ void main() {
         ['https://img.example/1.jpg?verify=abc&v=1']);
   });
 
+  test('reads a large gallery inside a single document.writeln call', () {
+    final images = List.generate(
+      5000,
+      (index) => 'https://img.example/$index.jpg?verify=signature-$index&v=1',
+    );
+    final entries = images
+        .map((url) => '{url: fast_img_host+${jsonEncode(url)}}')
+        .join(',');
+    final response =
+        'document.writeln(${jsonEncode('var imglist = [$entries];')});';
+
+    expect(HtMangaParser.galleryImages(response, baseUrl), images);
+  });
+
+  test('reads long signed image URLs with JavaScript escapes', () {
+    final signature = List.filled(20000, r'abc\x2d123_').join();
+    final decodedSignature = List.filled(20000, 'abc-123_').join();
+    final response = 'var imglist = ['
+        '{url: "//img.example/1.jpg?verify=$signature&v=1"}];';
+
+    expect(HtMangaParser.galleryImages(response, baseUrl), [
+      'https://img.example/1.jpg?verify=$decodedSignature&v=1',
+    ]);
+  });
+
+  test('rejects unterminated large JavaScript strings', () {
+    final padding = List.filled(256 * 1024, 'a').join();
+    for (final response in [
+      'document.writeln("$padding',
+      'document.writeln("$padding\\',
+      'var imglist = [{url: "$padding}];',
+    ]) {
+      expect(
+        () => HtMangaParser.galleryImages(response, baseUrl),
+        throwsFormatException,
+      );
+    }
+  });
+
   test(
     'does not treat unrelated scripts or an empty gallery as comic pages',
     () {
