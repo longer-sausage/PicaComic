@@ -454,8 +454,12 @@ class HtmangaNetwork {
             .attributes["href"]!;
         var id = RegExp(r"(?<=-aid-)[0-9]+").firstMatch(link)![0]!;
         var info =
-            comic.querySelector("div.box_cel.u_listcon > p.l_detla")!.text;
-        var pages = int.parse(RegExp(r"(?<=頁數：)[0-9]+").firstMatch(info)![0]!);
+            comic.querySelector("div.box_cel.u_listcon > p.l_detla")?.text ?? "";
+        // 页数可能缺失或使用不同的文字、冒号和空白，不应导致整个收藏夹加载失败。
+        var pages = int.tryParse(RegExp(r"[頁页][數数]\s*[:：]\s*([0-9]+)")
+                    .firstMatch(info)?[1] ??
+                "") ??
+            0;
         var delUrl = comic
             .querySelector("div.box_cel.u_listcon > p.alopt > a")!
             .attributes["onclick"]!;
