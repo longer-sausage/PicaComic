@@ -12,6 +12,30 @@ class ComicSourceParseException implements Exception {
 }
 
 class ComicSourceParser {
+  /// Validate source requirements against the API, not the fork's app version.
+  static void validateMinAppVersion(Object? minAppVersion) {
+    if (minAppVersion == null) return;
+    if (minAppVersion is! String) {
+      throw ComicSourceParseException('Invalid minAppVersion: $minAppVersion');
+    }
+    final version = minAppVersion.trim();
+    if (version.isEmpty) return;
+    if (!RegExp(r'^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?'
+            r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$')
+        .hasMatch(version)) {
+      throw ComicSourceParseException('Invalid minAppVersion: $minAppVersion');
+    }
+    try {
+      if (compareSemVer(version.split('+').first, comicSourceApiVersion)) {
+        throw ComicSourceParseException(
+            'minAppVersion $version is required '
+            '(supported comic source API: $comicSourceApiVersion)');
+      }
+    } on FormatException {
+      throw ComicSourceParseException('Invalid minAppVersion: $minAppVersion');
+    }
+  }
+
   /// comic source key
   String? _key;
 
@@ -62,11 +86,7 @@ class ComicSourceParser {
     var minAppVersion = JsEngine().runCode("this['temp'].minAppVersion");
     var url = JsEngine().runCode("this['temp'].url");
     var matchBriefIdRegex = JsEngine().runCode("this['temp'].comic.matchBriefIdRegex");
-    if(minAppVersion != null){
-      if(compareSemVer(minAppVersion, appVersion.split('-').first)){
-        throw ComicSourceParseException("minAppVersion $minAppVersion is required");
-      }
-    }
+    validateMinAppVersion(minAppVersion);
     for(var source in ComicSource.sources){
       if(source.key == key){
         throw ComicSourceParseException("key($key) already exists");

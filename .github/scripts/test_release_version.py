@@ -19,7 +19,10 @@ class ReleaseVersionTest(unittest.TestCase):
         self.pubspec = self.root / "pubspec.yaml"
         self.definitions = self.root / "lib/foundation/def.dart"
         self.pubspec.write_bytes(b"name: pica_comic\r\nversion: 4.2.11+4211\r\n")
-        self.definitions.write_bytes(b'// App version\r\nconst appVersion = "4.2.11";\r\n')
+        self.definitions.write_bytes(
+            b'// App version\r\nconst appVersion = "4.2.11";\r\n'
+            b'const comicSourceApiVersion = "4.2.11";\r\n'
+        )
 
     def test_release_tag_updates_native_and_display_versions(self):
         self.assertEqual(sync_version(self.root, "v1.0.0"), "1.0.0")
@@ -32,6 +35,13 @@ class ReleaseVersionTest(unittest.TestCase):
             self.assertEqual(sync_version(self.root, tag), version)
             self.assertIn(f"version: {version}+4211", self.pubspec.read_text())
             self.assertIn(f'const appVersion = "{version}";', self.definitions.read_text())
+
+    def test_release_tags_do_not_change_comic_source_api_compatibility(self):
+        for tag in ("v1.0.0", "v1.2.3", "v5.0.0"):
+            sync_version(self.root, tag)
+            self.assertIn(
+                'const comicSourceApiVersion = "4.2.11";', self.definitions.read_text()
+            )
 
     def test_invalid_tags_leave_both_files_unchanged(self):
         original = (self.pubspec.read_bytes(), self.definitions.read_bytes())

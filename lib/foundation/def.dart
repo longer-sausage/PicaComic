@@ -22,6 +22,10 @@ const String webUA =
 //App版本
 const appVersion = "1.0.0";
 
+// Custom source requirements use the upstream API version, independently of
+// this fork's release tags. Change this only when the source API changes.
+const comicSourceApiVersion = "4.2.11";
+
 //定义宽屏设备的临界值
 const changePoint = 600;
 const changePoint2 = 1300;
