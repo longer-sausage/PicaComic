@@ -88,6 +88,8 @@ extension ReadComic on DownloadedItem {
         () => ComicReadingPage.htmanga(
           comic.comic.id,
           comic.comic.title,
+          chapters: comic.comic.chapters,
+          initialEp: ep ?? history.ep,
           initialPage: ep == null ? history.page : 0,
         ),
       );

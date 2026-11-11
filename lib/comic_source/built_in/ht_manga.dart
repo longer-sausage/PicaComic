@@ -11,6 +11,7 @@ import 'package:pica_comic/network/res.dart';
 import 'package:pica_comic/pages/comic_page.dart';
 import 'package:pica_comic/pages/htmanga/ht_comic_page.dart';
 import 'package:pica_comic/pages/reader/comic_reading_page.dart';
+import 'package:pica_comic/tools/translations.dart';
 import '../comic_source.dart';
 
 final htManga = ComicSource.named(
@@ -224,7 +225,9 @@ class _HtComicTile extends ComicTile {
   }
 
   @override
-  String get subTitle => "${comic.pages} Pages";
+  String get subTitle => comic.chapterCount == null
+      ? "${comic.pages} Pages"
+      : "${comic.chapterCount} ${'章节'.tl}";
 
   @override
   ActionFunc? get read => () async {
@@ -244,6 +247,8 @@ class _HtComicTile extends ComicTile {
             () => ComicReadingPage.htmanga(
               res.data.id,
               comic.name,
+              chapters: res.data.chapters,
+              initialEp: history.ep,
               initialPage: history.page,
             ),
           );

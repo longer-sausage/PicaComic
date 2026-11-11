@@ -182,7 +182,10 @@ class HtmangaNetwork {
           }
           var pages = int.parse(pagesStr);
           try {
-            comics.add(HtComicBrief(name, time, image, id, pages));
+            final chapterCount = HtMangaParser.chapterCount(infoCol);
+            comics.add(HtComicBrief(
+                name, time, image, id, chapterCount == null ? pages : 0,
+                chapterCount: chapterCount));
           } finally {}
         }
         comicsRes.add(comics);
@@ -252,7 +255,10 @@ class HtmangaNetwork {
             }
           }
           var pages = pagesStr == "" ? 0 : int.parse(pagesStr);
-          comics.add(HtComicBrief(name, time, image, id, pages));
+          final chapterCount = HtMangaParser.chapterCount(infoCol);
+          comics.add(HtComicBrief(
+              name, time, image, id, chapterCount == null ? pages : 0,
+              chapterCount: chapterCount));
         } catch (e) {
           continue;
         }
@@ -308,9 +314,11 @@ class HtmangaNetwork {
       coverPath = HtMangaParser.resolveUrl(coverPath, baseUrl);
       var labels = document.querySelectorAll("div.asTBcell.uwconn > label");
       var category = labels[0].text.split("：")[1];
-      var pages = int.parse(
-          RegExp(r"\d+").firstMatch(labels[1].text.split("：")[1])![0]!);
-      var tagsDom = document.querySelectorAll("a.tagshow");
+      var pages = int.tryParse(RegExp(r"[頁页][數数]\s*[:：]\s*(\d+)")
+                  .firstMatch(labels.map((label) => label.text).join('\n'))?[1] ??
+              '') ??
+          0;
+      var tagsDom = document.querySelectorAll("div.asTBcell.uwconn a.tagshow");
       var tags = <String, String>{};
       for (var tag in tagsDom) {
         var link = tag.attributes["href"]!;
@@ -329,9 +337,34 @@ class HtmangaNetwork {
       var photos = List<String>.generate(photosDom.length,
           (index) => HtMangaParser.resolveUrl(
               photosDom[index].attributes['src']!, baseUrl));
+      final chapters = HtMangaParser.chapters(res.data);
+      final series = document.querySelector('#sr_pub');
+      if (series != null) {
+        // A collection has its own ID, but its images belong to the chapter IDs.
+        // The website paginates the directory separately from image thumbnails.
+        final total = int.tryParse(series.attributes['data-total'] ?? '') ??
+            chapters.length;
+        final perPage = int.tryParse(series.attributes['data-per'] ?? '') ?? 12;
+        if (perPage <= 0) throw const FormatException('无效的章节分页');
+        final template = series.attributes['data-pageurl'] ??
+            '/photos-index-aid-$id-page-[#page#].html';
+        for (var page = 2; page <= (total / perPage).ceil(); page++) {
+          final path = template
+              .replaceAll('[#page#]', '$page')
+              .replaceAll(RegExp('%5B%23page%23%5D', caseSensitive: false), '$page');
+          final response = await get(HtMangaParser.resolveUrl(path, baseUrl),
+              cache: false);
+          if (response.error) return Res.fromErrorRes(response);
+          chapters.addAll(HtMangaParser.chapters(response.data));
+        }
+        if (chapters.isEmpty || chapters.length < total) {
+          throw const FormatException('未获取到完整的漫画章节');
+        }
+      }
       return Res(
           HtComicInfo(id, coverPath, name, category, pages, tags, description,
-              uploader, avatar, uploadNum, photos));
+              uploader, avatar, uploadNum, photos,
+              chapters: chapters));
     } catch (e, s) {
       LogManager.addLog(LogLevel.error, "Data Analyse", "$e\n$s");
       return Res(null, errorMessage: e.toString());
@@ -464,8 +497,9 @@ class HtmangaNetwork {
             .querySelector("div.box_cel.u_listcon > p.alopt > a")!
             .attributes["onclick"]!;
         var favoriteId = RegExp(r"(?<=del-id-)[0-9]+").firstMatch(delUrl)![0];
-        comics.add(
-            HtComicBrief(name, time, cover, id, pages, favoriteId: favoriteId));
+        comics.add(HtComicBrief(name, time, cover, id, pages,
+            favoriteId: favoriteId,
+            chapterCount: HtMangaParser.chapterCount(info)));
       }
       int pages;
       try {

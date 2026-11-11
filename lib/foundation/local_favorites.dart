@@ -19,6 +19,7 @@ import 'package:pica_comic/network/nhentai_network/models.dart';
 import 'package:pica_comic/network/picacg_network/models.dart';
 import 'package:pica_comic/pages/favorites/main_favorites_page.dart';
 import 'package:pica_comic/tools/extensions.dart';
+import 'package:pica_comic/tools/translations.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'dart:io';
 import '../network/base_comic.dart';
@@ -166,7 +167,9 @@ class FavoriteItem {
 
   FavoriteItem.fromHtcomic(HtComicBrief comic)
       : name = comic.name,
-        author = "${comic.pages}Pages",
+        author = comic.chapterCount == null
+            ? "${comic.pages}Pages"
+            : "${comic.chapterCount} ${'章节'.tl}",
         type = FavoriteType.htManga,
         tags = [],
         target = comic.id,

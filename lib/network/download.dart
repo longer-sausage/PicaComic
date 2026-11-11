@@ -592,10 +592,11 @@ extension AddDownloadExt on DownloadManager {
   }
 
   ///添加绅士漫画下载
-  void addHtDownload(HtComicInfo comic) {
+  void addHtDownload(HtComicInfo comic, [List<int>? downloadEps]) {
     final id = "Ht${comic.id}";
     downloading
-        .addLast(DownloadingHtComic(comic, _onFinish, _onError, _saveInfo, id));
+        .addLast(DownloadingHtComic(comic, _onFinish, _onError, _saveInfo, id,
+            downloadEps: downloadEps));
     _saveInfo();
     unawaited(start());
   }

@@ -13,6 +13,8 @@ import 'package:pica_comic/foundation/history.dart';
 import 'package:pica_comic/foundation/local_favorites.dart';
 import 'package:pica_comic/tools/translations.dart';
 import 'package:pica_comic/components/components.dart';
+import 'package:pica_comic/components/select_download_eps.dart';
+import 'package:pica_comic/foundation/ui_mode.dart';
 
 class HtComicPage extends BaseComicPage<HtComicInfo> {
   const HtComicPage(this.id, {super.key, this.comicCover});
@@ -46,20 +48,40 @@ class HtComicPage extends BaseComicPage<HtComicInfo> {
   String? get cover => data?.cover ?? comicCover;
 
   @override
-  void download() {
+  void download() async {
     final id = "Ht${data!.id}";
-    if (DownloadManager().isExists(id)) {
-      showToast(message: "已下载".tl);
-      return;
-    }
     for (var i in DownloadManager().downloading) {
       if (i.id == id) {
         showToast(message: "下载中".tl);
         return;
       }
     }
-    DownloadManager().addHtDownload(data!);
-    showToast(message: "已加入下载队列".tl);
+    var downloaded = <int>[];
+    if (DownloadManager().isExists(id)) {
+      if (!data!.isCollection) {
+        showToast(message: "已下载".tl);
+        return;
+      }
+      downloaded = (await DownloadManager().getComicOrNull(id))!.downloadedEps;
+    }
+    if (!data!.isCollection) {
+      DownloadManager().addHtDownload(data!);
+      showToast(message: "已加入下载队列".tl);
+      return;
+    }
+    final selector = SelectDownloadChapter(data!.chapters.values.toList(),
+        (selectedEps) {
+      if (selectedEps.isEmpty) return;
+      DownloadManager().addHtDownload(data!, selectedEps);
+      App.globalBack();
+      showToast(message: "已加入下载队列".tl);
+    }, downloaded);
+    if (UiMode.m1(App.globalContext!)) {
+      showModalBottomSheet(
+          context: App.globalContext!, builder: (context) => selector);
+    } else {
+      showSideBar(App.globalContext!, selector, useSurfaceTintColor: true);
+    }
   }
 
   @override
@@ -75,7 +97,17 @@ class HtComicPage extends BaseComicPage<HtComicInfo> {
   }
 
   @override
-  EpsData? get eps => null;
+  EpsData? get eps => !data!.isCollection
+      ? null
+      : EpsData(data!.chapters.values.toList(), (index) async {
+          await History.findOrCreate(data!);
+          App.globalTo(() => ComicReadingPage.htmanga(
+                data!.id,
+                data!.title,
+                chapters: data!.chapters,
+                initialEp: index + 1,
+              ));
+        });
 
   @override
   String? get introduction => data!.description;
@@ -93,7 +125,9 @@ class HtComicPage extends BaseComicPage<HtComicInfo> {
       () => ComicReadingPage.htmanga(
         data!.target,
         data!.title,
-        initialPage: history!.page,
+        chapters: data!.chapters,
+        initialEp: history!.ep,
+        initialPage: history.page,
       ),
     );
   }
@@ -115,10 +149,12 @@ class HtComicPage extends BaseComicPage<HtComicInfo> {
       ));
 
   @override
-  ThumbnailsData? get thumbnailsCreator => ThumbnailsData(
-      data!.thumbnails,
-      (page) => HtmangaNetwork().getThumbnails(data!.id, page),
-      (data!.pages / 12).ceil());
+  ThumbnailsData? get thumbnailsCreator => data!.isCollection
+      ? null
+      : ThumbnailsData(
+          data!.thumbnails,
+          (page) => HtmangaNetwork().getThumbnails(data!.id, page),
+          (data!.pages / 12).ceil());
 
   @override
   String? get title => data?.name.removeAllBlank;

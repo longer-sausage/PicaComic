@@ -141,6 +141,8 @@ extension ToolBar on ComicReadingPage {
                                 otherInfo["epsId"] = readingData.eps!.keys
                                     .elementAt(logic.order - 1);
                                 otherInfo["bookId"] = readingData.id;
+                              } else if (logic.data.type == ReadingType.htManga) {
+                                otherInfo["htChapters"] = readingData.eps;
                               }
                               if (logic.data.type != ComicType.other) {
                                 otherInfo["eps"] =

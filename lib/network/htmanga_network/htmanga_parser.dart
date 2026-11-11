@@ -29,6 +29,20 @@ class HtMangaParser {
   static bool isAuthenticated(String html) =>
       parse(html).querySelector('a[href*="users-logout"]') != null;
 
+  static int? chapterCount(String text) =>
+      int.tryParse(RegExp(r'(\d+)\s*[話话]').firstMatch(text)?[1] ?? '');
+
+  static Map<String, String> chapters(String html) {
+    final chapters = <String, String>{};
+    for (final chapter in parse(html).querySelectorAll('a[data-chid]')) {
+      final id = chapter.attributes['data-chid']!;
+      if (!RegExp(r'^\d+$').hasMatch(id)) continue;
+      final name = chapter.attributes['title']?.trim();
+      chapters[id] = name == null || name.isEmpty ? chapter.text.trim() : name;
+    }
+    return chapters;
+  }
+
   static List<String> galleryImages(String source, String baseUrl) {
     // The gallery endpoint returns JavaScript containing document.writeln calls.
     // Decode the string literals first so signatures and escaped '&' survive.

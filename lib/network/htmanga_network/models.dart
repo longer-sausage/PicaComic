@@ -12,7 +12,7 @@ class HtHomePageData {
 }
 
 @immutable
-class HtComicBrief extends BaseComic{
+class HtComicBrief extends BaseComic {
   final String name;
   final String time;
   final String image;
@@ -20,10 +20,11 @@ class HtComicBrief extends BaseComic{
   @override
   final String id;
   final String? favoriteId;
+  final int? chapterCount;
 
   /// 漫画简略信息
   const HtComicBrief(this.name, this.time, this.image, this.id, this.pages,
-      {this.favoriteId});
+      {this.favoriteId, this.chapterCount});
 
   @override
   String get cover => image;
@@ -54,37 +55,54 @@ class HtComicInfo with HistoryMixin {
   final String avatar;
   final int uploadNum;
   final List<String> thumbnails;
+  final Map<String, String> chapters;
 
-  const HtComicInfo(this.id, this.coverPath, this.name, this.category, this.pages, this.tags,
-      this.description, this.uploader, this.avatar, this.uploadNum, this.thumbnails);
+  bool get isCollection => chapters.isNotEmpty;
 
-  HtComicBrief toBrief() => HtComicBrief(name, "", coverPath, id, pages);
+  const HtComicInfo(
+      this.id,
+      this.coverPath,
+      this.name,
+      this.category,
+      this.pages,
+      this.tags,
+      this.description,
+      this.uploader,
+      this.avatar,
+      this.uploadNum,
+      this.thumbnails,
+      {this.chapters = const {}});
+
+  HtComicBrief toBrief() => HtComicBrief(name, "", coverPath, id, pages,
+      chapterCount: isCollection ? chapters.length : null);
 
   Map<String, dynamic> toJson() => {
-    "id": id,
-    "coverPath": coverPath,
-    "name": name,
-    "category": category,
-    "pages": pages,
-    "tags": tags,
-    "description": description,
-    "uploader": uploader,
-    "avatar": avatar,
-    "uploadNum": uploadNum
-  };
+        "id": id,
+        "coverPath": coverPath,
+        "name": name,
+        "category": category,
+        "pages": pages,
+        "tags": tags,
+        "description": description,
+        "uploader": uploader,
+        "avatar": avatar,
+        "uploadNum": uploadNum,
+        "chapters": chapters
+      };
 
-  HtComicInfo.fromJson(Map<String, dynamic> json):
-      id = json["id"],
-      coverPath = json["coverPath"],
-      name = json["name"],
-      category = json["category"],
-      pages = json["pages"],
-      tags = Map<String, String>.from(json["tags"]),
-      description = json["description"],
-      uploader = json["uploader"],
-      avatar = json["avatar"],
-      uploadNum = json["uploadNum"],
-      thumbnails = [];
+  HtComicInfo.fromJson(Map<String, dynamic> json)
+      : id = json["id"],
+        coverPath = json["coverPath"],
+        name = json["name"],
+        category = json["category"],
+        pages = json["pages"],
+        tags = Map<String, String>.from(json["tags"]),
+        description = json["description"],
+        uploader = json["uploader"],
+        avatar = json["avatar"],
+        uploadNum = json["uploadNum"],
+        chapters = Map<String, String>.from(json["chapters"] ?? const {}),
+        thumbnails = [];
 
   @override
   String get cover => coverPath;

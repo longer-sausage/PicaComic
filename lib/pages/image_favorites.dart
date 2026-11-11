@@ -196,7 +196,10 @@ class FavoriteImageTile extends StatelessWidget {
       case "htManga":
       case "htmanga":
         App.globalTo(
-          () => ComicReadingPage.htmanga(target, title, initialPage: page),
+          () => ComicReadingPage.htmanga(target, title,
+              chapters: Map<String, String>.from(otherInfo['htChapters'] ?? {}),
+              initialEp: ep,
+              initialPage: page),
         );
       case "nhentai":
         App.globalTo(

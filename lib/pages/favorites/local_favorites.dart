@@ -729,6 +729,8 @@ class LocalFavoriteTile extends ComicTile {
               () => ComicReadingPage.htmanga(
                 res.data.id,
                 comic.name,
+                chapters: res.data.chapters,
+                initialEp: history.ep,
                 initialPage: history.page,
               ),
             );
