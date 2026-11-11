@@ -1,4 +1,4 @@
-package com.github.pacalini.pica_comic
+package com.github.longersausage.pica_comic
 
 import android.os.Build
 import android.view.KeyEvent
@@ -79,7 +79,7 @@ class MainActivity: FlutterFragmentActivity() {
             if(call.method == "link") {
                 val intent = Intent(
                     android.provider.Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS,
-                    Uri.parse("package:com.github.pacalini.pica_comic"),
+                    Uri.parse("package:com.github.longersausage.pica_comic"),
                 )
                 startActivity(intent)
                 res.success(null)
@@ -89,7 +89,7 @@ class MainActivity: FlutterFragmentActivity() {
                 } else {
                     Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
                 }
-                intent.data = Uri.parse("package:com.github.pacalini.pica_comic")
+                intent.data = Uri.parse("package:com.github.longersausage.pica_comic")
                 startActivity(intent)
                 res.success(null)
             } else if(call.method == "files_check") {

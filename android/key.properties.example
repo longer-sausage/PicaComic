@@ -1,0 +1,5 @@
+# Path is relative to android/app/.
+storeFile=../../.signing/android-release.jks
+storePassword=REPLACE_WITH_STORE_PASSWORD
+keyAlias=longersausage-pica-comic
+keyPassword=REPLACE_WITH_KEY_PASSWORD
