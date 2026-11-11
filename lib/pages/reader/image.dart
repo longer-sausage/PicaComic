@@ -9,6 +9,7 @@ class ComicImage extends StatelessWidget {
     this.excludeFromSemantics = false,
     this.width,
     this.height,
+    this.preloadExtent = 0,
     this.color,
     this.opacity,
     this.colorBlendMode,
@@ -32,6 +33,7 @@ class ComicImage extends StatelessWidget {
   final bool excludeFromSemantics;
   final double? width;
   final double? height;
+  final double preloadExtent;
   final bool gaplessPlayback;
   final bool matchTextDirection;
   final Rect? centerSlice;
@@ -77,6 +79,8 @@ class ComicImage extends StatelessWidget {
       semanticLabel: semanticLabel,
       excludeFromSemantics: excludeFromSemantics,
       resizeStatic: false,
+      deferOffscreenLoading: true,
+      preloadExtent: preloadExtent,
       zoomController: zoomController,
       onImage: (size) {
         if (_sizes.length >= 500) _sizes.remove(_sizes.keys.first);
@@ -85,20 +89,7 @@ class ComicImage extends StatelessWidget {
       placeholderBuilder: (context, progress) => SizedBox(
         width: displayWidth,
         height: placeholderHeight,
-        child: Center(
-          child: SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(
-              strokeWidth: 3,
-              value: progress?.expectedTotalBytes == null ||
-                      progress!.expectedTotalBytes == 0
-                  ? 0
-                  : progress.cumulativeBytesLoaded /
-                      progress.expectedTotalBytes!,
-            ),
-          ),
-        ),
+        child: ImageLoadingIndicator(progress: progress),
       ),
       errorBuilder: (context, error, retry) => SizedBox(
         height: 300,

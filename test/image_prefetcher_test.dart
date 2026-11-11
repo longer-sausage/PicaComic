@@ -48,6 +48,132 @@ void main() {
     expect((await otherProvider.loadBytes()).length, 8);
     prefetcher.dispose();
   });
+
+  test('a visible page starts before lookahead and bypasses stale requests',
+      () async {
+    final prefetcher = ImagePrefetcher();
+    final images = List.generate(6, (index) => _TestProvider('$index'));
+    prefetcher.prefetch(images.skip(1).take(2), priority: [images.first]);
+    await Future<void>.delayed(Duration.zero);
+    expect(images.map((image) => image.loads), [1, 0, 0, 0, 0, 0]);
+    images.first.result.complete(Uint8List(1));
+    await Future<void>.delayed(Duration.zero);
+    expect(images.map((image) => image.loads), [1, 1, 1, 0, 0, 0]);
+    prefetcher.prefetch([images[5]], priority: [images[4]]);
+    await Future<void>.delayed(Duration.zero);
+    expect(images[4].loads, 1,
+        reason: 'Do not wait for the two stale downloads');
+    images[1].result.complete(Uint8List(1));
+    images[2].result.complete(Uint8List(1));
+    await Future<void>.delayed(Duration.zero);
+    expect(images[5].loads, 0,
+        reason: 'Reserve bandwidth for the visible page');
+    images[4].result.complete(Uint8List(1));
+    await Future<void>.delayed(Duration.zero);
+    expect(images[5].loads, 1);
+    prefetcher.dispose();
+    images[5].result.complete(Uint8List(1));
+    await Future<void>.delayed(Duration.zero);
+  });
+
+  test('joining a prefetch replays progress and broadcasts completion',
+      () async {
+    final image = _TestProvider('progress');
+    final prefetch = image.loadBytes();
+    await Future<void>.delayed(Duration.zero);
+    image.events!.add(const ImageChunkEvent(
+        cumulativeBytesLoaded: 25, expectedTotalBytes: 100));
+    final first = <ImageChunkEvent>[];
+    final second = <ImageChunkEvent>[];
+    final displays = [
+      image.loadBytes(onChunk: first.add),
+      image.loadBytes(onChunk: second.add),
+    ];
+    expect(first.single.cumulativeBytesLoaded, 25);
+    expect(second.single.cumulativeBytesLoaded, 25);
+    image.events!.add(const ImageChunkEvent(
+        cumulativeBytesLoaded: 100, expectedTotalBytes: 100));
+    expect(first.last.cumulativeBytesLoaded, 100);
+    expect(second.last.cumulativeBytesLoaded, 100);
+    image.result.complete(Uint8List(100));
+    await Future.wait([prefetch, ...displays]);
+    expect(image.loads, 1);
+  });
+
+  test('continuous lookahead fills and replenishes slots behind a slow page',
+      () async {
+    final prefetcher = ImagePrefetcher();
+    final images = List.generate(10, (index) => _TestProvider('$index'));
+    prefetcher.prefetch(images.skip(1),
+        priority: [images.first], concurrency: 6, waitForPriority: false);
+    await Future<void>.delayed(Duration.zero);
+    expect(images.map((image) => image.loads), [1, 1, 1, 1, 1, 1, 0, 0, 0, 0]);
+    for (final image in images.skip(1).take(5)) {
+      image.result.complete(Uint8List(1));
+    }
+    await Future<void>.delayed(Duration.zero);
+    expect(images.every((image) => image.loads == 1), isTrue);
+    expect(images.first.result.isCompleted, isFalse,
+        reason: 'A slow first page must not block all following pages');
+    prefetcher.dispose();
+    for (final image in images) {
+      if (!image.result.isCompleted) image.result.complete(Uint8List(1));
+    }
+    await Future<void>.delayed(Duration.zero);
+  });
+
+  test('repeated jumps bound active prefetches and replace pending priorities',
+      () async {
+    final prefetcher = ImagePrefetcher();
+    final images = List.generate(8, (index) => _TestProvider('$index'));
+    prefetcher.prefetch(images.take(2));
+    prefetcher.prefetch([], priority: images.skip(2).take(2));
+    prefetcher.prefetch([], priority: [images[4]]);
+    prefetcher.prefetch([], priority: [images[5]]);
+    await Future<void>.delayed(Duration.zero);
+    expect(images.map((image) => image.loads), [1, 1, 1, 1, 0, 0, 0, 0]);
+    images.first.result.complete(Uint8List(1));
+    await Future<void>.delayed(Duration.zero);
+    expect(images[4].loads, 0);
+    expect(images[5].loads, 1);
+    prefetcher.dispose();
+    for (final image in images.skip(1)) {
+      image.result.complete(Uint8List(1));
+    }
+    await Future<void>.delayed(Duration.zero);
+  });
+
+  testWidgets('a transient reader request retries after 250 ms',
+      (tester) async {
+    final image = _TransientProvider();
+    var complete = false;
+    final request = image.loadBytes().then((_) => complete = true);
+    await tester.pump();
+    expect(image.loads, 1);
+    await tester.pump(const Duration(milliseconds: 249));
+    expect(image.loads, 1);
+    await tester.pump(const Duration(milliseconds: 1));
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+    expect(image.loads, 2);
+    expect(complete, isTrue);
+    await request;
+  });
+}
+
+class _TransientProvider extends BaseImageProvider<_TransientProvider> {
+  int loads = 0;
+
+  @override
+  String get key => 'transient';
+  @override
+  Future<_TransientProvider> obtainKey(ImageConfiguration configuration) =>
+      SynchronousFuture(this);
+  @override
+  Future<Uint8List> load(StreamController<ImageChunkEvent> chunkEvents) async {
+    if (++loads == 1) throw Exception('connection reset');
+    return Uint8List(1);
+  }
 }
 
 class _TestProvider extends BaseImageProvider<_TestProvider> {
@@ -57,6 +183,7 @@ class _TestProvider extends BaseImageProvider<_TestProvider> {
   final String key;
   final result = Completer<Uint8List>();
   int loads = 0;
+  StreamController<ImageChunkEvent>? events;
 
   @override
   Future<_TestProvider> obtainKey(ImageConfiguration configuration) =>
@@ -65,6 +192,7 @@ class _TestProvider extends BaseImageProvider<_TestProvider> {
   @override
   Future<Uint8List> load(StreamController<ImageChunkEvent> chunkEvents) {
     loads++;
+    events = chunkEvents;
     return result.future;
   }
 }

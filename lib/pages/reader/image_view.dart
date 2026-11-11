@@ -28,6 +28,7 @@ extension ImageExt on ComicReadingPage {
     ScrollExtension.futurePosition = null;
     Widget buildType4() {
       return ScrollablePositionedList.builder(
+        initialScrollIndex: (logic.index - 1).clamp(0, logic.urls.length - 1),
         itemScrollController: logic.itemScrollController,
         itemPositionsListener: logic.itemScrollListener,
         itemCount: logic.urls.length,
@@ -48,14 +49,14 @@ extension ImageExt on ComicReadingPage {
             imageWidth = height / 1.2;
           }
 
-          precacheComicImage(logic, context, index + 1, target);
-
           ImageProvider image = createImageProvider(type, logic, index, target);
           return ComicImage(
+            key: ValueKey(image),
             zoomController: logic.photoViewControllers[0],
             image: image,
             width: imageWidth,
             height: imageWidth * 1.2,
+            preloadExtent: logic.configuredPreloadPages > 0 ? height : 0,
             fit: BoxFit.cover,
           );
         },
@@ -85,8 +86,6 @@ extension ImageExt on ComicReadingPage {
               } else {
                 return const SizedBox();
               }
-
-              precacheComicImage(logic, context, index, target);
 
               BoxFit getFit() {
                 switch (appdata.settings[41]) {
@@ -158,20 +157,8 @@ extension ImageExt on ComicReadingPage {
                 },
                 heroAttributes:
                     PhotoViewHeroAttributes(tag: "$index/${logic.urls.length}"),
-                loadingBuilder: (context, event) => Center(
-                  child: SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      backgroundColor: context.colorScheme.surfaceContainerHigh,
-                      value: event?.expectedTotalBytes == null ||
-                              event!.expectedTotalBytes == 0
-                          ? null
-                          : event.cumulativeBytesLoaded /
-                              event.expectedTotalBytes!,
-                    ),
-                  ),
-                ),
+                loadingBuilder: (context, event) =>
+                    ImageLoadingIndicator(progress: event, size: 20),
               );
             },
             controller: logic.pageController,
@@ -236,8 +223,6 @@ extension ImageExt on ComicReadingPage {
             return PhotoViewGalleryPageOptions.customChild(
                 child: const SizedBox());
           }
-          precacheComicImage(logic, context, index * 2 + 1, target);
-
           final controller =
               logic.photoViewControllers[index] ??= PhotoViewController();
 
@@ -441,20 +426,5 @@ extension ImageExt on ComicReadingPage {
       }
     }
     return false;
-  }
-
-  /// preload image
-  void precacheComicImage(ComicReadingPageLogic logic, BuildContext context,
-      int index, String target) {
-    // Use the visible reading position, not a cached offscreen item's builder.
-    final start = logic.index;
-    final end =
-        (start + int.parse(appdata.settings[28])).clamp(0, logic.urls.length);
-    final providers = <BaseImageProvider>[];
-    for (var page = start; page < end; page++) {
-      final provider = createImageProvider(type, logic, page, target);
-      if (provider is BaseImageProvider) providers.add(provider);
-    }
-    logic.imagePrefetcher.prefetch(providers);
   }
 }

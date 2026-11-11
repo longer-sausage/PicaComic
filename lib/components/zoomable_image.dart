@@ -87,6 +87,7 @@ class _ZoomableImageState extends State<ZoomableImage> {
             fit: widget.fit,
             filterQuality: FilterQuality.medium,
             resizeStatic: false,
+            deferOffscreenLoading: true,
             gaplessPlayback: true,
             onImage: (size) {
               if (_imageSize != size) setState(() => _imageSize = size);

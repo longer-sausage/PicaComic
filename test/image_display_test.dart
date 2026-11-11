@@ -274,6 +274,262 @@ void main() {
     expect(provider.completer.hasListeners, isFalse);
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets('a sibling layout change resumes a previously invisible image',
+      (tester) async {
+    final provider = _ManualImageProvider();
+    final spacer = ValueNotifier(150.0);
+    await tester.pumpWidget(MaterialApp(
+      home: Center(
+        child: SizedBox(
+          width: 200,
+          height: 100,
+          child: SingleChildScrollView(
+            child: Column(children: [
+              ValueListenableBuilder<double>(
+                valueListenable: spacer,
+                builder: (_, height, __) => SizedBox(height: height),
+              ),
+              ImageDisplay(image: provider, width: 100, height: 100),
+            ]),
+          ),
+        ),
+      ),
+    ));
+    provider.completer.emit((await tester.runAsync(() => _image(Colors.red)))!);
+    await tester.pump();
+    await tester.pump();
+    expect(provider.completer.hasListeners, isFalse);
+    spacer.value = 0;
+    await tester.pump();
+    await tester.pump();
+    expect(provider.completer.hasListeners, isTrue);
+    expect(tester.allRenderObjects.whereType<RenderImage>().single.image,
+        isNotNull);
+    await tester.pumpWidget(const SizedBox());
+    spacer.dispose();
+  });
+
+  testWidgets('reader images only start decoding when they enter the viewport',
+      (tester) async {
+    final provider = _ManualImageProvider();
+    final controller = ScrollController();
+    await tester.pumpWidget(MaterialApp(
+      home: Center(
+        child: SizedBox(
+          width: 100,
+          height: 100,
+          child: SingleChildScrollView(
+            controller: controller,
+            child: Column(children: [
+              const SizedBox(height: 150),
+              ImageDisplay(
+                image: provider,
+                width: 100,
+                height: 100,
+                deferOffscreenLoading: true,
+              ),
+            ]),
+          ),
+        ),
+      ),
+    ));
+    await tester.pump();
+    expect(provider.loads, 0);
+    controller.jumpTo(150);
+    await tester.pump();
+    await tester.pump();
+    expect(provider.loads, 1);
+    provider.completer.emit((await tester.runAsync(() => _image(Colors.red)))!);
+    await tester.pump();
+    expect(tester.allRenderObjects.whereType<RenderImage>().single.image,
+        isNotNull);
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
+  });
+
+  testWidgets('a retained image resumes after a transform without scrolling',
+      (tester) async {
+    final provider = _ManualImageProvider();
+    final offset = ValueNotifier(Offset.zero);
+    await tester.pumpWidget(MaterialApp(
+      home: Center(
+        child: ClipRect(
+          child: SizedBox(
+            width: 100,
+            height: 100,
+            child: ValueListenableBuilder<Offset>(
+              valueListenable: offset,
+              builder: (_, value, child) =>
+                  Transform.translate(offset: value, child: child),
+              child: ImageDisplay(image: provider, width: 100, height: 100),
+            ),
+          ),
+        ),
+      ),
+    ));
+    provider.completer.emit((await tester.runAsync(() => _image(Colors.red)))!);
+    await tester.pump();
+    offset.value = const Offset(200, 0);
+    await tester.pump();
+    await tester.pump();
+    expect(provider.completer.hasListeners, isFalse);
+    offset.value = Offset.zero;
+    await tester.pump();
+    await tester.pump();
+    expect(provider.completer.hasListeners, isTrue);
+    await tester.pump();
+    expect(tester.binding.hasScheduledFrame, isFalse,
+        reason: 'Visibility checks must not continuously schedule idle frames');
+    await tester.pumpWidget(const SizedBox());
+    offset.dispose();
+  });
+
+  testWidgets('continuous lookahead prepares a first frame before scrolling',
+      (tester) async {
+    final image = _ManualImageProvider();
+    final controller = ScrollController();
+    var loadingBuilds = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Center(
+        child: SizedBox(
+          width: 100,
+          height: 100,
+          child: SingleChildScrollView(
+            controller: controller,
+            child: Column(children: [
+              const SizedBox(height: 150),
+              ImageDisplay(
+                image: image,
+                width: 100,
+                height: 100,
+                deferOffscreenLoading: true,
+                preloadExtent: 100,
+                placeholderBuilder: (_, progress) {
+                  loadingBuilds++;
+                  return const Text('loading');
+                },
+              ),
+            ]),
+          ),
+        ),
+      ),
+    ));
+    await tester.pump();
+    expect(image.loads, 1);
+    final beforeProgress = loadingBuilds;
+    image.completer.progress(50, 100);
+    await tester.pump();
+    expect(loadingBuilds, beforeProgress,
+        reason: 'Offscreen download progress should not rebuild the reader');
+    image.completer.emit((await tester.runAsync(() => _image(Colors.red)))!);
+    await tester.pump();
+    await tester.pump();
+    expect(image.completer.hasListeners, isFalse,
+        reason: 'Lookahead only prepares a first frame, then pauses playback');
+    expect(tester.allRenderObjects.whereType<RenderImage>().single.image,
+        isNotNull);
+    controller.jumpTo(150);
+    await tester.pump();
+    await tester.pump();
+    expect(image.loads, 1, reason: 'The entering page is already decoded');
+    expect(image.completer.hasListeners, isTrue);
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
+  });
+
+  testWidgets('continuous pages decode while scroll deferral is recommended',
+      (tester) async {
+    final image = _ManualImageProvider();
+    await tester.pumpWidget(MaterialApp(
+      home: SingleChildScrollView(
+        physics: const _DeferImagesPhysics(),
+        child: ImageDisplay(
+          image: image,
+          width: 100,
+          height: 100,
+          deferOffscreenLoading: true,
+          preloadExtent: 100,
+        ),
+      ),
+    ));
+    await tester.pump();
+    expect(image.loads, 1,
+        reason: 'Ready reading pages must not wait for a fling to stop');
+    image.completer.emit((await tester.runAsync(() => _image(Colors.red)))!);
+    await tester.pump();
+    expect(tester.allRenderObjects.whereType<RenderImage>().single.image,
+        isNotNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('offscreen animated lookahead keeps one frame and resumes safely',
+      (tester) async {
+    final image =
+        MemoryImage(File('test/fixtures/animated.webp').readAsBytesSync());
+    final controller = ScrollController();
+    await tester.pumpWidget(MaterialApp(
+      home: Center(
+        child: SizedBox(
+          width: 100,
+          height: 100,
+          child: SingleChildScrollView(
+            controller: controller,
+            child: Column(children: [
+              const SizedBox(height: 150),
+              ImageDisplay(
+                image: image,
+                width: 100,
+                height: 100,
+                deferOffscreenLoading: true,
+                preloadExtent: 100,
+              ),
+            ]),
+          ),
+        ),
+      ),
+    ));
+    final pixels = tester.allRenderObjects.whereType<RenderImage>().single;
+    for (var attempt = 0; attempt < 40 && pixels.image == null; attempt++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 5)));
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    expect(pixels.image, isNotNull);
+    for (var frame = 0; frame < 10; frame++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 5)));
+      await tester.pump(const Duration(milliseconds: 40));
+    }
+    expect(AnimatedImageCodec.cachedBytes, 0,
+        reason:
+            'Preparing an offscreen first frame must not play the animation');
+    controller.jumpTo(150);
+    for (var attempt = 0;
+        attempt < 40 && AnimatedImageCodec.cachedBytes == 0;
+        attempt++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 5)));
+      await tester.pump(const Duration(milliseconds: 40));
+    }
+    expect(AnimatedImageCodec.cachedBytes, greaterThan(0));
+    expect(pixels.image, isNotNull);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
+  });
+}
+
+class _DeferImagesPhysics extends ScrollPhysics {
+  const _DeferImagesPhysics();
+
+  @override
+  _DeferImagesPhysics applyTo(ScrollPhysics? ancestor) => this;
+
+  @override
+  bool recommendDeferredLoading(
+          double velocity, ScrollMetrics metrics, BuildContext context) =>
+      true;
 }
 
 Future<ui.Image> _image(Color color, {int width = 16, int height = 16}) async {
@@ -305,6 +561,9 @@ class _ManualImageProvider extends ImageProvider<_ManualImageProvider> {
 
 class _ManualCompleter extends ImageStreamCompleter {
   void emit(ui.Image image) => setImage(ImageInfo(image: image));
+
+  void progress(int loaded, int total) => reportImageChunkEvent(ImageChunkEvent(
+      cumulativeBytesLoaded: loaded, expectedTotalBytes: total));
 }
 
 class _FlakyImageProvider extends ImageProvider<_FlakyImageProvider> {

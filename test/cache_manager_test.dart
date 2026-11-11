@@ -1,11 +1,15 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/painting.dart';
 import 'package:pica_comic/foundation/app.dart';
 import 'package:pica_comic/foundation/cache_manager.dart';
+import 'package:pica_comic/foundation/image_loader/base_image_provider.dart';
+import 'package:pica_comic/foundation/image_loader/stream_image_provider.dart';
 import 'package:pica_comic/foundation/image_manager.dart';
 import 'package:pica_comic/network/cookie_jar.dart';
 import 'package:sqlite3/open.dart';
@@ -34,6 +38,9 @@ void main() {
   });
 
   tearDown(() async {
+    BaseImageProvider.clearCache();
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
     await cache.clear();
     await cache.dispose();
   });
@@ -220,6 +227,48 @@ void main() {
     } finally {
       await server.close(force: true);
       HttpOverrides.global = overrides;
+    }
+  });
+
+  test('a corrupt prefetched disk entry is refetched before showing an error',
+      () async {
+    const key = 'corrupt-reader-page';
+    await cache.writeCache(key, Uint8List.fromList(utf8.encode('truncated')));
+    final valid = base64Decode(
+        'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7');
+    var sourceLoads = 0;
+    final image = StreamImageProvider(() async* {
+      sourceLoads++;
+      final cached = await cache.findCache(key);
+      if (cached != null) {
+        yield DownloadProgress(1, 1, key, cached);
+      } else {
+        yield DownloadProgress(valid.length, valid.length, key, '', valid);
+      }
+    }, key);
+    await image.loadBytes();
+    expect(sourceLoads, 1);
+    final result = Completer<ImageInfo>();
+    final stream = image.resolve(ImageConfiguration.empty);
+    final listener = ImageStreamListener((info, synchronous) {
+      if (!result.isCompleted) {
+        result.complete(info);
+      } else {
+        info.dispose();
+      }
+    }, onError: (Object error, StackTrace? stack) {
+      if (!result.isCompleted) result.completeError(error, stack);
+    });
+    stream.addListener(listener);
+    try {
+      final frame = await result.future.timeout(const Duration(seconds: 5));
+      expect([frame.image.width, frame.image.height], [1, 1]);
+      frame.dispose();
+      expect(sourceLoads, 2);
+      expect(await cache.findCache(key), isNull);
+      expect(await image.loadBytes(), valid);
+    } finally {
+      stream.removeListener(listener);
     }
   });
 }

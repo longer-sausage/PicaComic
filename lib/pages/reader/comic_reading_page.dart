@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/gestures.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:photo_view/photo_view.dart';
@@ -11,6 +12,7 @@ import 'package:photo_view/photo_view_gallery.dart';
 import 'package:pica_comic/comic_source/comic_source.dart';
 import 'package:pica_comic/components/components.dart';
 import 'package:pica_comic/components/image_display.dart';
+import 'package:pica_comic/components/image_loading_indicator.dart';
 import 'package:pica_comic/components/zoomable_image.dart';
 import 'package:pica_comic/components/custom_slider.dart';
 import 'package:pica_comic/components/scrollable_list/src/item_positions_listener.dart';
@@ -171,8 +173,9 @@ class ComicReadingPage extends StatelessWidget {
   }
 
   _updateHistory(ComicReadingPageLogic? logic, bool updateMePage) {
+    if (history == null || logic == null) return;
     if (readingData.hasEp) {
-      if (logic!.order == 1 && logic.index == 1) {
+      if (logic.order == 1 && logic.index == 1) {
         history?.ep = 0;
         history?.page = 0;
       } else {
@@ -186,7 +189,7 @@ class ComicReadingPage extends StatelessWidget {
         }
       }
     } else {
-      if (logic!.index == 1) {
+      if (logic.index == 1) {
         history?.ep = 0;
         history?.page = 0;
       } else {
@@ -213,13 +216,10 @@ class ComicReadingPage extends StatelessWidget {
           DeviceOrientation.landscapeRight
         ]);
       } else if (appdata.settings[76] == "2") {
-        SystemChrome.setPreferredOrientations([
-          DeviceOrientation.portraitUp,
-          DeviceOrientation.portraitDown
-        ]);
+        SystemChrome.setPreferredOrientations(
+            [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown]);
       }
-      //进入阅读器时清除内存中的缓存, 并且增大限制
-      BaseImageProvider.clearCache();
+      // Retain warm bytes and in-flight requests when opening the reader.
       BaseImageProvider.setCacheSizeLimit(100 * 1024 * 1024);
       logic.openEpsView = openEpsDrawer;
       if (useDarkBackground) {
@@ -228,9 +228,8 @@ class ComicReadingPage extends StatelessWidget {
                 ?.setDarkTheme());
       }
     }, dispose: (logic) {
-      logic.imagePrefetcher.dispose();
-      //清除缓存并减小最大缓存
-      BaseImageProvider.clearCache();
+      logic.dispose();
+      // Trim to the normal budget without discarding every warm image.
       BaseImageProvider.setCacheSizeLimit(50 * 1024 * 1024);
       logic.clearPhotoViewControllers();
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -243,9 +242,9 @@ class ComicReadingPage extends StatelessWidget {
       }
       logic.runningAutoPageTurning = false;
       ComicImage.clear();
-      StateController.remove<ComicReadingPageLogic>();
       // 更新本地收藏
-      LocalFavoritesManager().onReadEnd(readingData.favoriteId, readingData.favoriteType);
+      LocalFavoritesManager()
+          .onReadEnd(readingData.favoriteId, readingData.favoriteType);
       // 保存历史记录
       if (history != null) {
         _updateHistory(logic, true);
@@ -292,15 +291,6 @@ class ComicReadingPage extends StatelessWidget {
                 child: CircularProgressIndicator(),
               );
             } else if (logic.urls.isNotEmpty) {
-              if (logic.readingMethod ==
-                      ReadingMethod.topToBottomContinuously &&
-                  !logic.haveUsedInitialPage &&
-                  initialPage != 0) {
-                Future.microtask(() {
-                  logic.jumpToPage(initialPage);
-                  logic.haveUsedInitialPage = true;
-                });
-              }
               //监听音量键
               if (appdata.settings[7] == "1") {
                 if (logic.listenVolume == null) {
@@ -471,16 +461,8 @@ class ComicReadingPage extends StatelessWidget {
     ));
   }
 
-  void loadInfo(ComicReadingPageLogic logic) async {
-    logic.urls = [];
-    var res = await readingData.loadEp(logic.order);
-    if (res.error) {
-      logic.errorMessage = res.errorMessage;
-    } else {
-      logic.urls = res.data;
-    }
-    logic.isLoading = false;
-    logic.update();
+  void loadInfo(ComicReadingPageLogic logic) {
+    logic.loadChapter();
   }
 
   Widget buildEpsView() {

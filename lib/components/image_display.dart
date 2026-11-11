@@ -31,6 +31,8 @@ class ImageDisplay extends StatefulWidget {
     this.semanticLabel,
     this.excludeFromSemantics = false,
     this.resizeStatic = true,
+    this.deferOffscreenLoading = false,
+    this.preloadExtent = 0,
     this.decodeSize,
     this.zoomController,
     this.fadeInDuration = Duration.zero,
@@ -57,6 +59,13 @@ class ImageDisplay extends StatefulWidget {
   final String? semanticLabel;
   final bool excludeFromSemantics;
   final bool resizeStatic;
+
+  /// Let the reader prefetch bytes while only visible pages start decoding.
+  final bool deferOffscreenLoading;
+
+  /// Prepare the first frame this many logical pixels outside scroll clips.
+  /// Animation playback still pauses outside the actual viewport.
+  final double preloadExtent;
 
   /// Logical display bounds, independent of a zoomable image's child size.
   final Size? decodeSize;
@@ -197,6 +206,7 @@ class _StreamImageDisplayState extends State<_StreamImageDisplay> {
   Object? _error;
   bool _listening = false;
   bool _active = true;
+  bool _nearViewport = false;
   int _receivedFrames = 0;
   bool _awaitingFirstFrame = true;
   late final _listener = ImageStreamListener(
@@ -206,6 +216,12 @@ class _StreamImageDisplayState extends State<_StreamImageDisplay> {
       if (mounted) setState(() => _error = error);
     },
   );
+
+  @override
+  void initState() {
+    super.initState();
+    _active = !widget.options.deferOffscreenLoading;
+  }
 
   @override
   void didChangeDependencies() {
@@ -223,11 +239,14 @@ class _StreamImageDisplayState extends State<_StreamImageDisplay> {
   }
 
   void _resolve({bool retry = false, bool keepFrame = false}) {
-    if (!_active || !TickerMode.of(context)) return;
-    final stream = ScrollAwareImageProvider<Object>(
-      context: _scrollContext,
-      imageProvider: widget.image,
-    ).resolve(createLocalImageConfiguration(context));
+    if ((!_active && !_nearViewport) || !TickerMode.of(context)) return;
+    final provider = widget.options.preloadExtent > 0
+        ? widget.image
+        : ScrollAwareImageProvider<Object>(
+            context: _scrollContext,
+            imageProvider: widget.image,
+          );
+    final stream = provider.resolve(createLocalImageConfiguration(context));
     if (!retry && _stream?.key == stream.key) {
       _updateListening(resolve: false);
       return;
@@ -248,7 +267,8 @@ class _StreamImageDisplayState extends State<_StreamImageDisplay> {
   }
 
   void _updateListening({bool resolve = true}) {
-    final listen = _active && TickerMode.of(context);
+    final listen = (_active || (_nearViewport && _awaitingFirstFrame)) &&
+        TickerMode.of(context);
     if (listen == _listening) return;
     if (listen && resolve) {
       // An inactive animation may have released its native decoder.
@@ -288,6 +308,8 @@ class _StreamImageDisplayState extends State<_StreamImageDisplay> {
     _replaceFrame(info);
     _error = null;
     _progress = null;
+    // Offscreen lookahead retains its first frame without playing animations.
+    if (!_active) _updateListening(resolve: false);
     if (rebuild) setState(() {});
     if ((firstFrame || sizeChanged) && widget.options.onImage != null) {
       final size =
@@ -310,7 +332,8 @@ class _StreamImageDisplayState extends State<_StreamImageDisplay> {
 
   void _handleProgress(ImageChunkEvent event) {
     if (_info == null && widget.options.placeholderBuilder != null) {
-      setState(() => _progress = event);
+      _progress = event;
+      if (_active) setState(() {});
     }
   }
 
@@ -353,9 +376,16 @@ class _StreamImageDisplayState extends State<_StreamImageDisplay> {
           Semantics(image: true, label: options.semanticLabel, child: result);
     }
     return ImageActivity(
+      preloadExtent: options.preloadExtent,
+      onLoadChanged: (near) {
+        _nearViewport = near;
+        _updateListening();
+      },
       onChanged: (active) {
+        final becameActive = active && !_active;
         _active = active;
         _updateListening();
+        if (becameActive && _info == null && _progress != null) setState(() {});
       },
       child: result,
     );
@@ -426,10 +456,18 @@ class _RenderFrameImage extends RenderImage {
 /// Pauses image streams outside scroll clips, on inactive routes, and while
 /// the app is in the background. Checks are coalesced to once per scroll frame.
 class ImageActivity extends StatefulWidget {
-  const ImageActivity({super.key, required this.child, this.onChanged});
+  const ImageActivity({
+    super.key,
+    required this.child,
+    this.onChanged,
+    this.onLoadChanged,
+    this.preloadExtent = 0,
+  }) : assert(preloadExtent >= 0);
 
   final Widget child;
   final ValueChanged<bool>? onChanged;
+  final ValueChanged<bool>? onLoadChanged;
+  final double preloadExtent;
 
   @override
   State<ImageActivity> createState() => _ImageActivityState();
@@ -441,6 +479,9 @@ class _ImageActivityState extends State<ImageActivity>
   final _positions = <ScrollPosition>[];
   bool _scheduled = false;
   bool _enabled = true;
+  bool _reported = false;
+  bool _loadEnabled = false;
+  bool _loadReported = false;
 
   @override
   void initState() {
@@ -474,6 +515,10 @@ class _ImageActivityState extends State<ImageActivity>
       setState(() => _enabled = false);
       widget.onChanged?.call(false);
     }
+    if (state != AppLifecycleState.resumed && _loadEnabled) {
+      _loadEnabled = false;
+      widget.onLoadChanged?.call(false);
+    }
     _scheduleCheck();
   }
 
@@ -493,45 +538,60 @@ class _ImageActivityState extends State<ImageActivity>
       _scheduled = false;
       if (!mounted) return;
       final lifecycle = WidgetsBinding.instance.lifecycleState;
-      final enabled =
+      final allowed =
           (lifecycle == null || lifecycle == AppLifecycleState.resumed) &&
-              TickerMode.of(context) &&
-              _isVisible();
-      if (enabled != _enabled) {
-        setState(() => _enabled = enabled);
+              TickerMode.of(context);
+      final visibility =
+          allowed ? _visibility() : (visible: false, load: false);
+      final enabled = visibility.visible;
+      if (!_loadReported || visibility.load != _loadEnabled) {
+        _loadReported = true;
+        _loadEnabled = visibility.load;
+        widget.onLoadChanged?.call(_loadEnabled);
+      }
+      if (!_reported || enabled != _enabled) {
+        _reported = true;
+        if (enabled != _enabled) setState(() => _enabled = enabled);
         widget.onChanged?.call(enabled);
       }
     });
     SchedulerBinding.instance.ensureVisualUpdate();
   }
 
-  bool _isVisible() {
+  ({bool visible, bool load}) _visibility() {
     final box = _renderKey.currentContext?.findRenderObject();
     if (box is! RenderBox ||
         !box.attached ||
         !box.hasSize ||
         box.size.isEmpty) {
-      return true;
+      return (visible: true, load: true);
     }
-    var bounds = MatrixUtils.transformRect(
+    final bounds = MatrixUtils.transformRect(
         box.getTransformTo(null), Offset.zero & box.size);
-    bounds = bounds.intersect(Offset.zero & MediaQuery.sizeOf(context));
-    if (bounds.isEmpty) {
-      return false;
+    final screen = Offset.zero & MediaQuery.sizeOf(context);
+    var visibleBounds = bounds.intersect(screen);
+    var loadBounds = bounds.intersect(screen.inflate(widget.preloadExtent));
+    if (loadBounds.isEmpty) {
+      return (visible: false, load: false);
     }
     RenderObject child = box;
     while (child.parent != null) {
       final parent = child.parent!;
-      if (parent is RenderOffstage && parent.offstage) return false;
+      if (parent is RenderOffstage && parent.offstage) {
+        return (visible: false, load: false);
+      }
       final clip = parent.describeApproximatePaintClip(child);
       if (clip != null) {
-        bounds = bounds.intersect(
-            MatrixUtils.transformRect(parent.getTransformTo(null), clip));
-        if (bounds.isEmpty) return false;
+        final globalClip =
+            MatrixUtils.transformRect(parent.getTransformTo(null), clip);
+        visibleBounds = visibleBounds.intersect(globalClip);
+        loadBounds =
+            loadBounds.intersect(globalClip.inflate(widget.preloadExtent));
+        if (loadBounds.isEmpty) return (visible: false, load: false);
       }
       child = parent;
     }
-    return true;
+    return (visible: !visibleBounds.isEmpty, load: !loadBounds.isEmpty);
   }
 
   @override
@@ -553,9 +613,50 @@ class _ImageActivityState extends State<ImageActivity>
       child: SizeChangedLayoutNotifier(
         child: TickerMode(
           enabled: _enabled,
-          child: RepaintBoundary(key: _renderKey, child: widget.child),
+          child: _ImageActivityBoundary(
+              key: _renderKey, onPaint: _scheduleCheck, child: widget.child),
         ),
       ),
     );
+  }
+}
+
+/// Composition also changes when a sibling finishes loading or a PhotoView
+/// transform moves an image, without any scroll or size notification here.
+class _ImageActivityBoundary extends SingleChildRenderObjectWidget {
+  const _ImageActivityBoundary(
+      {super.key, required this.onPaint, required super.child});
+
+  final VoidCallback onPaint;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderImageActivityBoundary(onPaint);
+
+  @override
+  void updateRenderObject(
+      BuildContext context, _RenderImageActivityBoundary renderObject) {
+    renderObject.onPaint = onPaint;
+  }
+}
+
+class _RenderImageActivityBoundary extends RenderRepaintBoundary {
+  _RenderImageActivityBoundary(this.onPaint);
+
+  VoidCallback onPaint;
+  VoidCallback? _removeCallback;
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    _removeCallback?.call();
+    _removeCallback = context.addCompositionCallback((_) => onPaint());
+    super.paint(context, offset);
+  }
+
+  @override
+  void detach() {
+    _removeCallback?.call();
+    _removeCallback = null;
+    super.detach();
   }
 }
