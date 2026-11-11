@@ -164,6 +164,7 @@ class Appdata {
     "gold-usergeneratedcontent.net", //87 hitomi cdn url
     "0", //88 jm auto checkin
     "2.0.11", //89 jm app version
+    "1", //90 动态调整下载并行
   ];
 
   /// 隐式数据, 用于存储一些不需要用户设置的数据, 此数据通常为某些组件的状态, 此设置不应当被同步
@@ -482,6 +483,15 @@ class _Settings {
   set fullyHideBlockedWorks(bool value) {
     appdata.settings[83] = value ? "1" : "0";
   }
+
+  bool get adaptiveDownloadConcurrency => appdata.settings[90] != '0';
+
+  set adaptiveDownloadConcurrency(bool value) {
+    appdata.settings[90] = value ? '1' : '0';
+  }
+
+  int get downloadConcurrency =>
+      (int.tryParse(appdata.settings[79]) ?? 6).clamp(1, 16);
 
   /// cache size limit in MB
   int get cacheLimit => int.tryParse(appdata.settings[35]) ?? 500;

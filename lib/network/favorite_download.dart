@@ -1,5 +1,5 @@
+import 'package:dio/dio.dart';
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:pica_comic/foundation/image_manager.dart';
 import 'package:pica_comic/foundation/local_favorites.dart';
@@ -30,12 +30,10 @@ class FavoriteDownloading extends DownloadingItem{
 
   @override
   void start() async{
-    await onStart();
-    downloadLogic.start();
+    await _prepareDownload();
   }
 
-  @override
-  Future<void> onStart() async{
+  Future<void> _prepareDownload() async{
     try {
       switch(comic.type.key){
         case 0: {
@@ -121,7 +119,7 @@ class FavoriteDownloading extends DownloadingItem{
       downloadLogic.toDownloadedItem();
 
   @override
-  Stream<DownloadProgress> downloadImage(String link) {
-    return downloadLogic.downloadImage(link);
+  Stream<DownloadProgress> downloadImage(String link, {CancelToken? cancelToken}) {
+    return downloadLogic.downloadImage(link, cancelToken: cancelToken);
   }
 }

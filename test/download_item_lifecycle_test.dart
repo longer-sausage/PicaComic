@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -28,6 +29,9 @@ class _PendingDownload extends DownloadingItem {
   String get path => Directory.systemTemp.path;
 
   @override
+  bool get haveEps => false;
+
+  @override
   Future<Map<int, List<String>>> getLinks() => metadata.future;
 
   @override
@@ -37,7 +41,8 @@ class _PendingDownload extends DownloadingItem {
   }
 
   @override
-  Stream<DownloadProgress> downloadImage(String link) {
+  Stream<DownloadProgress> downloadImage(String link,
+      {CancelToken? cancelToken}) {
     imageRequests++;
     return images.stream;
   }
@@ -60,7 +65,8 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() => AppTranslation.translations = {});
 
-  Future<void> settle() => Future<void>.delayed(Duration.zero);
+  Future<void> settle() =>
+      Future<void>.delayed(const Duration(milliseconds: 30));
 
   test('metadata arriving after pause cannot start cover, images or recorder',
       () async {

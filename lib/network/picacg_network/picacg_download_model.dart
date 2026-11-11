@@ -1,14 +1,11 @@
+import 'package:dio/dio.dart';
 import 'dart:async';
-import 'dart:convert';
-import 'package:flutter/foundation.dart';
 import 'package:pica_comic/foundation/image_manager.dart';
 import 'package:pica_comic/network/download_model.dart';
 import 'package:pica_comic/tools/extensions.dart';
 import 'package:pica_comic/tools/io_tools.dart';
-import '../../base.dart';
 import '../download.dart';
 import 'methods.dart';
-import 'models.dart';
 import 'dart:io';
 
 class DownloadedComic extends DownloadedItem {
@@ -97,17 +94,14 @@ class PicDownloadingItem extends DownloadingItem {
 
   @override
   Future<Map<int, List<String>>> getLinks() async {
-    var res = <int, List<String>>{};
     _eps = (await network.getEps(id)).data;
-    for (var i in _downloadEps) {
-      res[i + 1] = (await network.getComicContent(id, i + 1)).data;
-    }
-    return res;
+    return loadDownloadChapters(_downloadEps.map((i) => i + 1),
+        (ep) async => (await network.getComicContent(id, ep)).data);
   }
 
   @override
-  Stream<DownloadProgress> downloadImage(String link) {
-    return ImageManager().getImage(getImageUrl(link));
+  Stream<DownloadProgress> downloadImage(String link, {CancelToken? cancelToken}) {
+    return ImageManager().getImage(getImageUrl(link), null, cancelToken);
   }
 
   @override

@@ -13,6 +13,7 @@ import 'package:pica_comic/tools/translations.dart';
 import '../base.dart';
 import 'app_dio.dart';
 import 'download.dart';
+import 'download_scheduler.dart';
 
 abstract class DownloadedItem {
   ///漫画源
@@ -75,6 +76,25 @@ typedef DownloadProgressCallback = void Function();
 
 typedef DownloadProgressCallbackAsync = Future<void> Function();
 
+/// Fetch chapter metadata with bounded concurrency while retaining comic order.
+Future<Map<int, List<String>>> loadDownloadChapters(
+    Iterable<int> chapters, Future<List<String>> Function(int) load) async {
+  final ordered = chapters.toSet().toList();
+  final results = <int, List<String>>{};
+  var next = 0;
+  Future<void> worker() async {
+    while (next < ordered.length) {
+      final ep = ordered[next++];
+      results[ep] = await load(ep);
+    }
+  }
+
+  await Future.wait([
+    for (var i = 0; i < 3 && i < ordered.length; i++) worker(),
+  ]);
+  return {for (final ep in ordered) ep: results[ep]!};
+}
+
 abstract class DownloadingItem with _TransferSpeedMixin {
   ///完成时调用
   final DownloadProgressCallback? onFinish;
@@ -123,7 +143,29 @@ abstract class DownloadingItem with _TransferSpeedMixin {
   /// all image urls
   Map<int, List<String>>? links;
 
-  int get allowedLoadingNumber => int.tryParse(appdata.settings[79]) ?? 6;
+  int get allowedLoadingNumber =>
+      _scheduler?.concurrency ??
+      (appdata.appSettings.adaptiveDownloadConcurrency
+          ? AdaptiveDownloadConcurrency.initialConcurrency
+          : appdata.appSettings.downloadConcurrency);
+
+  int get activeDownloads => _scheduler?.activeCount ?? 0;
+
+  @override
+  void onNextSecond(Timer t) {
+    super.onNextSecond(t);
+    notifications.sendProgressNotification(downloadedPages, totalPages,
+        '下载中'.tl, '${downloadManager.downloading.length} Tasks');
+  }
+
+  void refreshConcurrency() => _scheduler?.refreshConcurrency();
+
+  DownloadTaskScheduler<int>? _scheduler;
+  AdaptiveDownloadConcurrency _adaptiveConcurrency =
+      AdaptiveDownloadConcurrency();
+  CancelToken? _coverCancelToken;
+  final _completedTasks = <String>{};
+  Future<void> _lastProgressSave = Future.value();
 
   DownloadingItem(this.onFinish, this.onError, this.updateInfo, this.id,
       {required this.type});
@@ -133,14 +175,19 @@ abstract class DownloadingItem with _TransferSpeedMixin {
     if (file.existsSync()) {
       return;
     }
-    var dio = logDio();
-    var res = await dio.get<Uint8List>(cover,
-        options: Options(responseType: ResponseType.bytes, headers: headers));
-    if (file.existsSync()) {
-      file.deleteSync();
+    final token = _coverCancelToken = CancelToken();
+    final dio = logDio();
+    try {
+      final res = await dio.get<Uint8List>(cover,
+          cancelToken: token,
+          options: Options(responseType: ResponseType.bytes, headers: headers));
+      if (token.isCancelled) return;
+      await file.parent.create(recursive: true);
+      await file.writeAsBytes(res.data!);
+    } finally {
+      dio.close();
+      if (identical(_coverCancelToken, token)) _coverCancelToken = null;
     }
-    file.createSync(recursive: true);
-    file.writeAsBytesSync(res.data!);
   }
 
   /// retry when error
@@ -161,67 +208,93 @@ abstract class DownloadingItem with _TransferSpeedMixin {
   @mustCallSuper
   FutureOr<void> onStart() {
     if (directory == null) {
-      if(DownloadManager().isExists(id)) {
+      if (DownloadManager().isExists(id)) {
         directory = DownloadManager().getDirectory(id);
       } else {
-      directory = findValidDirectoryName(DownloadManager().path!, title);
-      Directory(path).createSync(recursive: true);
+        directory = findValidDirectoryName(DownloadManager().path!, title);
+        Directory(path).createSync(recursive: true);
       }
     }
   }
 
-  final _downloading = <String, _ImageDownloadWrapper>{};
+  void _saveProgress() {
+    _lastProgressSave = Future<void>.sync(() async {
+      await updateInfo?.call();
+    }).catchError((Object error, StackTrace stack) {
+      Log.error('Download', 'Failed to save progress: $error\n$stack');
+    });
+  }
 
-  void _addDownloading(String link, int ep, int index) {
-    var downloadTo = '';
-    var basename = '';
-    if (haveEps) {
-      downloadTo = "$path/$ep";
-      basename = index.toString();
+  void _completePage(int ep, int page, int length) {
+    _completedTasks.add('$ep:$page');
+    // Keep the existing contiguous checkpoint format for older saved queues.
+    // Later pages count toward progress immediately and survive pause/resume.
+    while (index < length && _completedTasks.remove('$ep:$index')) {
+      index++;
+      _downloadedNum++;
+    }
+    _saveProgress();
+  }
+
+  Future<void> _downloadPage(
+      int ep, int page, DownloadTaskContext task, int runtimeKey) async {
+    DownloadProgress? result;
+    var received = 0;
+    await for (final progress
+        in downloadImage(links![ep]![page], cancelToken: task.cancelToken)) {
+      if (task.isCanceled) return;
+      // A cached image is represented by a synthetic 1/1 progress event.
+      if ((progress.data == null || received == 0) &&
+          !(received == 0 && progress.finished && progress.currentBytes <= 1)) {
+        task.receivedBytes(progress.currentBytes - received);
+      }
+      if (progress.currentBytes > received) received = progress.currentBytes;
+      result = progress;
+    }
+    if (task.isCanceled) return;
+    if (result == null || !result.finished) {
+      throw const FileSystemException('Incomplete image download');
+    }
+
+    // Wait for stream completion: a final network chunk may precede cache flush
+    // or image recombination even if its byte count already matches the total.
+    final data = result.data;
+    late List<int> header;
+    if (data != null) {
+      header = data;
     } else {
-      downloadTo = path;
-      basename = index.toString();
-    }
-    if (_downloading["$ep$index"] == null ||
-        _downloading["$ep$index"]!.error != null) {
-      final currentKey = _runtimeKey;
-      _downloading["$ep$index"] = _ImageDownloadWrapper(
-        downloadImage(link),
-        downloadTo,
-        basename,
-        onData,
-        () {
-          if (_paused || currentKey != _runtimeKey) return;
-          updateInfo?.call();
-          _scheduleTasks(ep, this.index);
-        },
-      );
-    }
-  }
-
-  void _scheduleTasks(int ep, int index) {
-    if (_paused) return;
-    var urls = links![ep]!;
-    int downloading = 0;
-    for (int i = index; i < urls.length; i++) {
-      var task = _downloading["$ep$i"];
-      if (task == null || task.error != null) {
-        _addDownloading(urls[i], ep, i);
-        downloading++;
-      } else if (!task.isFinished) {
-        downloading++;
+      final source = await result.getFile().open();
+      try {
+        header = await source.read(64);
+      } finally {
+        await source.close();
       }
-      if (downloading >= allowedLoadingNumber) {
-        break;
+    }
+    if (header.isEmpty) throw const FileSystemException('Empty image');
+    if (task.isCanceled) return;
+    final target = haveEps ? '$path/$ep' : path;
+    final file = File('$target/$page${detectFileType(header).ext}');
+    final temporary = File('$target/.$page.$runtimeKey.part');
+    try {
+      if (data != null) {
+        await temporary.writeAsBytes(data);
+      } else {
+        await result.getFile().copy(temporary.path);
       }
+      if (task.isCanceled) return;
+      await temporary.rename(file.path);
+    } finally {
+      if (await temporary.exists()) await temporary.delete();
     }
   }
 
   /// begin or continue downloading
   void start() async {
+    if (!_paused) return;
     _runtimeKey++;
     _paused = false;
     var currentKey = _runtimeKey;
+    var prepared = false;
     try {
       await onStart();
       if (_runtimeKey != currentKey) return;
@@ -229,44 +302,51 @@ abstract class DownloadingItem with _TransferSpeedMixin {
           "下载中".tl, "${downloadManager.downloading.length} Tasks");
 
       // get image links and cover
-      links ??= await getLinks();
+      final imageLinks = links ?? await getLinks();
       if (_runtimeKey != currentKey) return;
+      links = imageLinks;
       await downloadCover();
       if (_runtimeKey != currentKey) return;
+      prepared = true;
+      _retryTimes = 0;
       runRecorder();
 
       // download images
       while (_downloadingEp < links!.length && currentKey == _runtimeKey) {
         int ep = links!.keys.elementAt(_downloadingEp);
         var urls = links![ep]!;
-        while (index < urls.length && currentKey == _runtimeKey) {
-          notifications.sendProgressNotification(downloadedPages, totalPages,
-              "下载中".tl, "${downloadManager.downloading.length} Tasks");
-          _scheduleTasks(ep, index);
-          if (currentKey != _runtimeKey) return;
-          var task = _downloading["$ep$index"];
-          if (task == null) {
-            throw Exception("Task not started");
-          }
-          await task.wait();
-          if (task.error != null) {
-            throw task.error!;
-          }
-          if (!task.isFinished) {
-            throw Exception("Task not finished");
-          }
-          _downloading.remove("$ep$index");
+        await Directory(haveEps ? '$path/$ep' : path).create(recursive: true);
+        if (currentKey != _runtimeKey) return;
+        final scheduler = _scheduler = DownloadTaskScheduler<int>(
+          tasks: Iterable.generate(urls.length - index, (i) => i + index)
+              .where((page) => !_completedTasks.contains('$ep:$page')),
+          adaptive: () => appdata.appSettings.adaptiveDownloadConcurrency,
+          fixedConcurrency: () => appdata.appSettings.downloadConcurrency,
+          controller: _adaptiveConcurrency,
+          download: (page, task) => _downloadPage(ep, page, task, currentKey),
+          onBytes: onData,
+          onComplete: (page) {
+            if (currentKey != _runtimeKey) return;
+            _completePage(ep, page, urls.length);
+          },
+        );
+        await scheduler.run();
+        if (currentKey != _runtimeKey) return;
+        _adaptiveConcurrency = scheduler.controller;
+        _scheduler = null;
+        // Restored out-of-order pages may fill the entire remaining episode.
+        while (index < urls.length && _completedTasks.remove('$ep:$index')) {
           index++;
           _downloadedNum++;
-          await updateInfo?.call();
         }
-        if (currentKey != _runtimeKey) return;
         index = 0;
         _downloadingEp++;
-        await updateInfo?.call();
+        _saveProgress();
       }
 
       // finish downloading
+      if (_runtimeKey != currentKey) return;
+      await _lastProgressSave;
       if (_runtimeKey != currentKey) return;
       if (DownloadManager().downloading.firstOrNull != this) return;
       _paused = true;
@@ -276,22 +356,22 @@ abstract class DownloadingItem with _TransferSpeedMixin {
     } catch (e, s) {
       if (currentKey != _runtimeKey) return;
       _paused = true;
+      stopRecorder();
+      _stopAllTasks();
       LogManager.addLog(LogLevel.error, "Download", "$e\n$s");
-      retry();
+      if (prepared) {
+        onError?.call();
+      } else {
+        unawaited(retry());
+      }
     }
   }
 
   void _stopAllTasks() {
-    var shouldRemove = <String>[];
-    for(var entry in _downloading.entries) {
-      if(!entry.value.isFinished) {
-        entry.value.cancel();
-        shouldRemove.add(entry.key);
-      }
-    }
-    for(var key in shouldRemove) {
-      _downloading.remove(key);
-    }
+    _scheduler?.cancel();
+    _scheduler = null;
+    _coverCancelToken?.cancel('Download stopped');
+    _coverCancelToken = null;
   }
 
   /// pause downloading
@@ -301,7 +381,6 @@ abstract class DownloadingItem with _TransferSpeedMixin {
     stopRecorder();
     notifications.endProgress();
     _stopAllTasks();
-    ImageManager.clearTasks();
   }
 
   /// stop downloading
@@ -311,6 +390,7 @@ abstract class DownloadingItem with _TransferSpeedMixin {
     stopRecorder();
     _stopAllTasks();
     notifications.endProgress();
+    if (directory == null) return;
     if (downloadManager.isExists(id)) {
       if (links == null) return;
       var comicPath = "$path/";
@@ -345,10 +425,8 @@ abstract class DownloadingItem with _TransferSpeedMixin {
       "index": index,
       "links": convertedData,
       "directory": directory,
-      "finishedTasks": _downloading.entries
-          .where((element) => element.value.isFinished)
-          .map((e) => e.key)
-          .toList(),
+      "finishedTasks": _completedTasks.toList(),
+      "taskKeyVersion": 2,
     };
   }
 
@@ -370,10 +448,18 @@ abstract class DownloadingItem with _TransferSpeedMixin {
       });
     }
     directory = map["directory"];
-    if(map["finishedTasks"] != null) {
-      var finishedTasks = List<String>.from(map["finishedTasks"]);
-      for (var task in finishedTasks) {
-        _downloading[task] = _ImageDownloadWrapper.finished();
+    final finished = Set<String>.from(map['finishedTasks'] ?? []);
+    if (map['taskKeyVersion'] == 2) {
+      _completedTasks.addAll(finished);
+    } else if (links != null) {
+      // Legacy task IDs concatenated episode and page without a separator.
+      // Only the current episode could have outstanding finished pages.
+      final eps = links!.keys.toList();
+      if (_downloadingEp < eps.length) {
+        final ep = eps[_downloadingEp];
+        for (var page = index; page < links![ep]!.length; page++) {
+          if (finished.contains('$ep$page')) _completedTasks.add('$ep:$page');
+        }
       }
     }
   }
@@ -392,7 +478,8 @@ abstract class DownloadingItem with _TransferSpeedMixin {
       type != DownloadType.htmanga &&
       type != DownloadType.nhentai;
 
-  Stream<DownloadProgress> downloadImage(String link);
+  Stream<DownloadProgress> downloadImage(String link,
+      {CancelToken? cancelToken});
 
   ///获取封面链接
   String get cover;
@@ -401,7 +488,7 @@ abstract class DownloadingItem with _TransferSpeedMixin {
   int get totalPages => links?.totalLength ?? 0;
 
   ///已下载的图片数量
-  int get downloadedPages => _downloadedNum;
+  int get downloadedPages => _downloadedNum + _completedTasks.length;
 
   ///标题
   String get title;
@@ -426,94 +513,6 @@ abstract class DownloadingItem with _TransferSpeedMixin {
   }
 }
 
-class _ImageDownloadWrapper {
-  final Stream<DownloadProgress> stream;
-
-  final String path;
-
-  final String fileBaseName;
-
-  final void Function(int length)? onReceiveData;
-
-  final void Function()? onFinished;
-
-  Object? error;
-
-  bool isFinished = false;
-
-  bool _canceled = false;
-
-  void cancel() {
-    _canceled = true;
-  }
-
-  _ImageDownloadWrapper(
-    this.stream,
-    this.path,
-    this.fileBaseName,
-    this.onReceiveData,
-    this.onFinished,
-  ) {
-    listen();
-  }
-
-  _ImageDownloadWrapper.finished():
-    stream = const Stream.empty(),
-    path = "",
-    fileBaseName = "",
-    onReceiveData = null,
-    onFinished = null,
-    isFinished = true;
-
-  void listen() async {
-    try {
-      var last = 0;
-      await for (var progress in stream) {
-        if(_canceled) {
-          for (var c in completers) {
-            c.complete(this);
-          }
-          return;
-        }
-        onReceiveData?.call(progress.currentBytes - last);
-        last = progress.currentBytes;
-        if (progress.finished) {
-          var data = progress.data ?? await progress.getFile().readAsBytes();
-          if (data.isNotEmpty){
-            var type = detectFileType(data);
-            var file = File("$path/$fileBaseName${type.ext}");
-            if (!await file.exists()) {
-              await file.create(recursive: true);
-            }
-            await file.writeAsBytes(data);
-          }
-          isFinished = true;
-        }
-      }
-    } catch (e) {
-      error = e;
-    }
-    if (!isFinished && error == null) {
-      error = Exception("Failed to download image");
-    }
-    onFinished?.call();
-    for (var c in completers) {
-      c.complete(this);
-    }
-  }
-
-  var completers = <Completer<_ImageDownloadWrapper>>[];
-
-  Future<_ImageDownloadWrapper> wait() {
-    if (isFinished) {
-      return Future.value(this);
-    }
-    var completer = Completer<_ImageDownloadWrapper>();
-    completers.add(completer);
-    return completer.future;
-  }
-}
-
 abstract mixin class _TransferSpeedMixin {
   int _bytesSinceLastSecond = 0;
 
@@ -525,7 +524,7 @@ abstract mixin class _TransferSpeedMixin {
 
   void onData(int length) {
     if (timer == null) return;
-    _bytesSinceLastSecond += length;
+    if (length > 0) _bytesSinceLastSecond += length;
   }
 
   void onNextSecond(Timer t) {
@@ -538,11 +537,13 @@ abstract mixin class _TransferSpeedMixin {
     if (timer != null) {
       timer!.cancel();
     }
+    _bytesSinceLastSecond = _currentSpeed = 0;
     timer = Timer.periodic(const Duration(seconds: 1), onNextSecond);
   }
 
   void stopRecorder() {
     timer?.cancel();
     timer = null;
+    _bytesSinceLastSecond = _currentSpeed = 0;
   }
 }

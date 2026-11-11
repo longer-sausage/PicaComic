@@ -1,7 +1,5 @@
+import 'package:dio/dio.dart';
 import 'dart:async';
-import 'dart:convert';
-import 'package:flutter/foundation.dart';
-import 'package:pica_comic/base.dart';
 import 'package:pica_comic/network/download.dart';
 import 'package:pica_comic/foundation/image_manager.dart';
 import 'jm_image.dart';
@@ -115,22 +113,16 @@ class JmDownloadingItem extends DownloadingItem {
       comic.series[1] = id.replaceFirst("jm", "");
     }
     var res = <int, List<String>>{};
-    var futures = <Future>[];
-    for (var key in comic.series.keys.toList()) {
-      if (!_downloadEps.contains(key - 1)) continue;
-      futures.add(getOneEp(key, res));
-      await Future.delayed(const Duration(milliseconds: 200));
-      if (futures.length % 5 == 0) {
-        await Future.wait(futures);
-        futures.clear();
-      }
-    }
-    await Future.wait(futures);
-    return res;
+    return loadDownloadChapters(
+        comic.series.keys.where((key) => _downloadEps.contains(key - 1)),
+        (ep) async {
+      await getOneEp(ep, res);
+      return res[ep]!;
+    });
   }
 
   @override
-  Stream<DownloadProgress> downloadImage(String link) {
+  Stream<DownloadProgress> downloadImage(String link, {CancelToken? cancelToken}) {
     var bookId = "";
     for (int i = link.length - 1; i >= 0; i--) {
       if (link[i] == '/') {
@@ -143,6 +135,7 @@ class JmDownloadingItem extends DownloadingItem {
       {},
       epsId: comic.series[links!.keys.toList()[downloadingEp]]!,
       scrambleId: "220980",
+      cancelToken: cancelToken,
       bookId: bookId,
     );
   }

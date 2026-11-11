@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'dart:async';
 import 'dart:isolate';
 import 'package:pica_comic/base.dart';
@@ -16,18 +17,15 @@ import '../download.dart';
 import 'eh_main_network.dart';
 import 'get_gallery_id.dart';
 
-class DownloadedGallery extends DownloadedItem{
+class DownloadedGallery extends DownloadedItem {
   Gallery gallery;
   double? size;
-  DownloadedGallery(this.gallery,this.size);
+  DownloadedGallery(this.gallery, this.size);
 
   @override
-  Map<String, dynamic> toJson()=>{
-    "gallery": gallery.toJson(),
-    "size": size
-  };
-  DownloadedGallery.fromJson(Map<String, dynamic> map):
-        gallery = Gallery.fromJson(map["gallery"]),
+  Map<String, dynamic> toJson() => {"gallery": gallery.toJson(), "size": size};
+  DownloadedGallery.fromJson(Map<String, dynamic> map)
+      : gallery = Gallery.fromJson(map["gallery"]),
         size = map["size"];
 
   @override
@@ -41,7 +39,7 @@ class DownloadedGallery extends DownloadedItem{
 
   @override
   String get name {
-    if(appdata.settings[78] == "1"){
+    if (appdata.settings[78] == "1") {
       return gallery.subTitle ?? gallery.title;
     } else {
       return gallery.title;
@@ -62,9 +60,11 @@ class DownloadedGallery extends DownloadedItem{
     size = value;
   }
 
-  List<String> _getTags(){
+  List<String> _getTags() {
     var res = <String>[];
-    gallery.tags.forEach((key, value) => value.forEach((element) => res.add(element)));
+    for (final tags in gallery.tags.values) {
+      res.addAll(tags);
+    }
     return res;
   }
 
@@ -73,16 +73,10 @@ class DownloadedGallery extends DownloadedItem{
 }
 
 ///e-hentai的下载进程模型
-class EhDownloadingItem extends DownloadingItem{
-  EhDownloadingItem(
-      this.gallery,
-      super.whenFinish,
-      super.onError,
-      super.updateInfo,
-      super.id,
-      this.downloadType,
-      {super.type = DownloadType.ehentai}
-  );
+class EhDownloadingItem extends DownloadingItem {
+  EhDownloadingItem(this.gallery, super.whenFinish, super.onError,
+      super.updateInfo, super.id, this.downloadType,
+      {super.type = DownloadType.ehentai});
 
   ///画廊模型
   final Gallery gallery;
@@ -91,41 +85,44 @@ class EhDownloadingItem extends DownloadingItem{
 
   @override
   Map<String, String> get headers => {
-    "Cookie": EhNetwork().cookiesStr,
-    "User-Agent": webUA,
-    "Referer": EhNetwork().ehBaseUrl,
-  };
+        "Cookie": EhNetwork().cookiesStr,
+        "User-Agent": webUA,
+        "Referer": EhNetwork().ehBaseUrl,
+      };
 
   @override
-  String get cover => gallery.coverPath.replaceFirst('s.exhentai.org', 'ehgt.org');
+  String get cover =>
+      gallery.coverPath.replaceFirst('s.exhentai.org', 'ehgt.org');
 
   @override
   String get title => gallery.title;
 
   @override
-  Future<Map<int, List<String>>> getLinks() async{
+  Future<Map<int, List<String>>> getLinks() async {
     return {
-      0: List.generate((int.parse(gallery.maxPage)), (index) => (index+1).toString())
+      0: List.generate(
+          (int.parse(gallery.maxPage)), (index) => (index + 1).toString())
     };
   }
 
   @override
-  Stream<DownloadProgress> downloadImage(String link) {
-    return ImageManager().getEhImageNew(gallery, int.parse(link));
+  Stream<DownloadProgress> downloadImage(String link,
+      {CancelToken? cancelToken}) {
+    return ImageManager().getEhImageNew(gallery, int.parse(link), cancelToken);
   }
 
   @override
   Map<String, dynamic> toMap() => {
-    "gallery": gallery.toJson(),
-    "downloadType": downloadType,
-    "_downloadLink": _downloadLink,
-    "_currentBytes": _currentBytes,
-    "_totalBytes": _totalBytes,
-    ...super.toBaseMap()
-  };
+        "gallery": gallery.toJson(),
+        "downloadType": downloadType,
+        "_downloadLink": _downloadLink,
+        "_currentBytes": _currentBytes,
+        "_totalBytes": _totalBytes,
+        ...super.toBaseMap()
+      };
 
   @override
-  Future<void> onStart() async{
+  Future<void> onStart() async {
     await super.onStart();
     // clear showKey and imageKey
     // imageKey is saved through the network cache mechanism
@@ -140,7 +137,7 @@ class EhDownloadingItem extends DownloadingItem{
 
   @override
   int get totalPages {
-    if(downloadType == 0){
+    if (downloadType == 0) {
       return super.totalPages;
     } else {
       return _totalBytes ?? 1;
@@ -149,7 +146,7 @@ class EhDownloadingItem extends DownloadingItem{
 
   @override
   int get downloadedPages {
-    if(downloadType == 0){
+    if (downloadType == 0) {
       return super.downloadedPages;
     } else {
       return _currentBytes ?? 0;
@@ -165,28 +162,44 @@ class EhDownloadingItem extends DownloadingItem{
   int _currentSpeed = 0;
 
   @override
-  int get currentSpeed => downloadType == 0
-      ? super.currentSpeed
-      : _currentSpeed;
+  int get currentSpeed =>
+      downloadType == 0 ? super.currentSpeed : _currentSpeed;
 
   int _archiveGeneration = 0;
+  Future<void> _archiveStopped = Future.value();
+  int _archiveConcurrency = 6;
 
   @override
-  start() async{
-    if(downloadType == 0){
+  int get allowedLoadingNumber =>
+      downloadType == 0 ? super.allowedLoadingNumber : _archiveConcurrency;
+
+  @override
+  void refreshConcurrency() {
+    if (downloadType == 0) {
+      super.refreshConcurrency();
+    } else {
+      _downloader?.updateConcurrency();
+    }
+  }
+
+  @override
+  start() async {
+    if (downloadType == 0) {
       return super.start();
     } else {
       final generation = ++_archiveGeneration;
       _stop = false;
-      try{
+      try {
+        await _archiveStopped;
+        if (_stop || generation != _archiveGeneration) return;
         await onStart();
         if (_stop || generation != _archiveGeneration) return;
         await downloadCover();
         if (_stop || generation != _archiveGeneration) return;
-        if(gallery.auth?["archiveDownload"] == null){
+        if (gallery.auth?["archiveDownload"] == null) {
           throw "No archive download link";
         }
-        if(_downloadLink == null) {
+        if (_downloadLink == null) {
           var res = await EhNetwork().getArchiveDownloadLink(
               gallery.auth!["archiveDownload"]!, downloadType);
           if (_stop || generation != _archiveGeneration) {
@@ -197,29 +210,25 @@ class EhDownloadingItem extends DownloadingItem{
           }
           _downloadLink = res.data;
         }
-        _downloader = _IsolateDownloader(
-            _downloadLink!,
-            path,
-            (current, total, speed){
-              if (_stop || generation != _archiveGeneration) return;
-              _currentBytes = current;
-              _totalBytes = total;
-              _currentSpeed = speed;
-              notifications.sendProgressNotification(current, total,
-                  '下载中'.tl, '${DownloadManager().downloading.length} Tasks');
-              updateInfo?.call();
-              if(current == total){
-                if (DownloadManager().downloading.firstOrNull != this) return;
-                finish();
-              }
-            },
-            () {
-              if (!_stop && generation == _archiveGeneration) onError?.call();
-            }
-        );
+        _downloader = _IsolateDownloader(_downloadLink!, path,
+            (current, total, speed, concurrency) {
+          if (_stop || generation != _archiveGeneration) return;
+          _currentBytes = current;
+          _totalBytes = total;
+          _currentSpeed = speed;
+          _archiveConcurrency = concurrency;
+          notifications.sendProgressNotification(current, total, '下载中'.tl,
+              '${DownloadManager().downloading.length} Tasks');
+          updateInfo?.call();
+          if (current == total) {
+            if (DownloadManager().downloading.firstOrNull != this) return;
+            finish();
+          }
+        }, () {
+          if (!_stop && generation == _archiveGeneration) onError?.call();
+        });
         _downloader!.start();
-      }
-      catch(e, s){
+      } catch (e, s) {
         if (_stop || generation != _archiveGeneration) return;
         log("$e\n$s", "Download", LogLevel.error);
         onError?.call();
@@ -228,32 +237,38 @@ class EhDownloadingItem extends DownloadingItem{
     }
   }
 
-  void finish() async{
+  void finish() async {
     onFinish?.call();
   }
 
   @override
-  pause() async{
-    if(downloadType == 0){
-      return super.pause();
+  Future<void> pause() async {
+    if (downloadType == 0) {
+      super.pause();
+      return;
     } else {
       _archiveGeneration++;
       _stop = true;
-      _downloader?.pause();
+      _currentSpeed = 0;
+      _archiveStopped = _downloader?.stop() ?? Future.value();
+      await _archiveStopped;
     }
   }
 
   @override
-  stop() async{
-    if(downloadType == 0){
-      return super.stop();
+  Future<void> stop() async {
+    if (downloadType == 0) {
+      super.stop();
+      return;
     } else {
       _archiveGeneration++;
       _stop = true;
-      _downloader?.stop();
-      var directory = Directory(path);
-      if(await directory.exists()) {
-        await directory.delete(recursive: true);
+      _archiveStopped = _downloader?.stop() ?? Future.value();
+      await _archiveStopped;
+      if (directory == null) return;
+      final comicDirectory = Directory(path);
+      if (await comicDirectory.exists()) {
+        await comicDirectory.delete(recursive: true);
       }
     }
   }
@@ -263,8 +278,8 @@ class EhDownloadingItem extends DownloadingItem{
       DownloadProgressCallback whenFinish,
       DownloadProgressCallback whenError,
       DownloadProgressCallbackAsync updateInfo,
-      String id
-      ):gallery=Gallery.fromJson(map["gallery"]),
+      String id)
+      : gallery = Gallery.fromJson(map["gallery"]),
         downloadType = map["downloadType"],
         _currentBytes = map["_currentBytes"],
         _totalBytes = map["_totalBytes"],
@@ -277,59 +292,116 @@ class EhDownloadingItem extends DownloadingItem{
   }
 }
 
-class _IsolateDownloader{
+class _IsolateDownloader {
   final String url;
 
   final String savePath;
 
-  late ReceivePort port;
+  ReceivePort? port;
 
-  late SendPort sendPort;
+  SendPort? sendPort;
+  bool _stopped = false;
+  bool _starting = false;
+  final _terminated = Completer<void>();
 
-  final void Function(int current, int total, int speed) updateInfo;
+  final void Function(int current, int total, int speed, int concurrency)
+      updateInfo;
 
   final void Function() onError;
 
-  _IsolateDownloader(this.url, this.savePath, this.updateInfo,
-      this.onError);
+  _IsolateDownloader(this.url, this.savePath, this.updateInfo, this.onError);
 
   Isolate? isolate;
 
-  void stop(){
-    sendPort.send("stop");
+  Future<void> stop() {
+    if (_terminated.isCompleted) return _terminated.future;
+    _stopped = true;
+    if (sendPort != null) {
+      sendPort!.send('stop');
+    } else if (!_starting && isolate == null) {
+      _finish();
+    }
+    return _terminated.future;
+  }
+
+  void _finish() {
+    isolate?.kill(priority: Isolate.immediate);
     isolate = null;
-    port.close();
+    port?.close();
+    if (!_terminated.isCompleted) _terminated.complete();
   }
 
-  void pause(){
-    stop();
-  }
-
-  void start() async{
-    port = ReceivePort();
-    isolate = await Isolate.spawn<_DownloadData>(run, _DownloadData(
-        port.sendPort, url, savePath, await getProxy()));
-    var total = 0;
-    port.listen((message) {
-      if(message is SendPort){
-        sendPort = message;
-      } else if(message is DownloadingStatus){
-        updateInfo(message.downloadedBytes, message.totalBytes+1, message.bytesPerSecond);
-        total = message.totalBytes;
-      } else if(message == "finish"){
-        isolate?.kill(priority: Isolate.immediate);
-        isolate = null;
-        updateInfo(total+1, total+1, 0);
-      } else if(message is _DownloadException){
-        isolate?.kill(priority: Isolate.immediate);
-        isolate = null;
-        LogManager.addLog(LogLevel.error, "Download", message.message);
+  void start() async {
+    _starting = true;
+    try {
+      final proxy = await getProxy();
+      if (_stopped) {
+        _finish();
+        return;
+      }
+      final receiving = port = ReceivePort();
+      var total = 0;
+      receiving.listen((message) {
+        if (message is SendPort) {
+          sendPort = message;
+          if (_stopped) {
+            message.send('stop');
+          } else {
+            updateConcurrency();
+          }
+        } else if (message is DownloadingStatus) {
+          updateInfo(message.downloadedBytes, message.totalBytes + 1,
+              message.bytesPerSecond, message.concurrency);
+          total = message.totalBytes;
+        } else if (message == "finish") {
+          _finish();
+          updateInfo(total + 1, total + 1, 0, 1);
+        } else if (message is _DownloadException) {
+          _finish();
+          LogManager.addLog(LogLevel.error, "Download", message.message);
+          if (!_stopped) onError();
+        } else if (message == 'stopped') {
+          _finish();
+        } else if (message == null || message is List) {
+          _finish();
+          if (!_stopped) {
+            Log.error(
+                'Download', 'Archive worker exited unexpectedly: $message');
+            onError();
+          }
+        }
+      });
+      isolate = await Isolate.spawn<_DownloadData>(
+          run,
+          _DownloadData(
+              receiving.sendPort,
+              url,
+              savePath,
+              proxy,
+              appdata.appSettings.adaptiveDownloadConcurrency,
+              appdata.appSettings.downloadConcurrency),
+          onError: receiving.sendPort,
+          onExit: receiving.sendPort);
+      if (_terminated.isCompleted) _finish();
+    } catch (error, stack) {
+      _finish();
+      if (!_stopped) {
+        Log.error('Download', '$error\n$stack');
         onError();
       }
+    } finally {
+      _starting = false;
+    }
+  }
+
+  void updateConcurrency() {
+    sendPort?.send({
+      'adaptive': appdata.appSettings.adaptiveDownloadConcurrency,
+      'maxConcurrent': appdata.appSettings.downloadConcurrency,
     });
   }
 
-  static void run(_DownloadData data) async{
+  static void run(_DownloadData data) async {
     var receivePort = ReceivePort();
 
     final sendPort = data.port;
@@ -341,30 +413,42 @@ class _IsolateDownloader{
     final savePath = data.savePath;
 
     FileDownloader? task;
+    var stopped = false;
 
     receivePort.listen((message) {
-      if(message == "stop"){
-        task?.stop().then((value) => Isolate.current.kill());
+      if (message == "stop") {
+        stopped = true;
+        if (task == null) {
+          Isolate.exit(sendPort, 'stopped');
+        } else {
+          task!.stop().then((_) => Isolate.exit(sendPort, 'stopped'));
+        }
+      } else if (message is Map) {
+        task?.updateConcurrency(
+            adaptive: message['adaptive'] as bool,
+            maxConcurrent: message['maxConcurrent'] as int);
       }
     });
 
-    Future.sync(() async{
-      task = FileDownloader(url, "$savePath/temp.zip", data.proxy);
+    Future.sync(() async {
+      task = FileDownloader(url, "$savePath/temp.zip", data.proxy,
+          adaptive: data.adaptive, maxConcurrent: data.maxConcurrent);
 
       try {
         await for (var status in task!.start()) {
           sendPort.send(status);
         }
+        if (stopped) return;
         ZipFile.openAndExtract("$savePath/temp.zip", savePath);
         var files = Directory(savePath).listSync();
         files.sort((a, b) => a.path.compareTo(b.path));
         int index = 0;
-        for(var entry in Directory(savePath).listSync()){
-          if(entry is File){
+        for (var entry in files) {
+          if (entry is File) {
             var name = entry.path.split(pathSep).last;
-            if(name.endsWith(".zip")){
+            if (name.endsWith(".zip")) {
               entry.deleteSync();
-            } else if(!name.contains("cover")){
+            } else if (!name.contains("cover")) {
               var baseName = index.toString();
               index++;
               var ext = name.split(".").last;
@@ -373,25 +457,26 @@ class _IsolateDownloader{
           }
         }
         sendPort.send("finish");
-      }
-      catch(e, s){
+      } catch (e, s) {
         sendPort.send(_DownloadException("$e\n$s"));
       }
     });
   }
 }
 
-class _DownloadData{
+class _DownloadData {
   final SendPort port;
   final String url;
   final String savePath;
   final String? proxy;
+  final bool adaptive;
+  final int maxConcurrent;
 
-  const _DownloadData(this.port, this.url, this.savePath,
-      this.proxy);
+  const _DownloadData(this.port, this.url, this.savePath, this.proxy,
+      this.adaptive, this.maxConcurrent);
 }
 
-class _DownloadException{
+class _DownloadException {
   final String message;
 
   const _DownloadException(this.message);

@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:pica_comic/network/htmanga_network/htmanga_main_network.dart';
@@ -76,8 +77,8 @@ class DownloadingHtComic extends DownloadingItem {
   }
 
   @override
-  Stream<DownloadProgress> downloadImage(String link) {
-    return ImageManager().getImage(link, HtmangaNetwork.headers);
+  Stream<DownloadProgress> downloadImage(String link, {CancelToken? cancelToken}) {
+    return ImageManager().getImage(link, HtmangaNetwork.headers, cancelToken);
   }
 
   @override

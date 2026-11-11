@@ -13,6 +13,7 @@ import 'package:pica_comic/foundation/image_loader/image_recombine.dart';
 import 'package:pica_comic/foundation/log.dart';
 import 'package:pica_comic/network/app_dio.dart';
 import 'package:pica_comic/network/cookie_jar.dart';
+import 'package:pica_comic/network/download_scheduler.dart';
 import 'package:pica_comic/network/eh_network/eh_models.dart';
 import 'package:pica_comic/network/eh_network/get_gallery_id.dart';
 import 'package:pica_comic/network/hitomi_network/hitomi_models.dart';
@@ -22,14 +23,25 @@ import 'package:pica_comic/tools/file_type.dart';
 import '../base.dart';
 import '../network/eh_network/eh_main_network.dart';
 import '../network/hitomi_network/image.dart';
-import '../network/jm_network/jm_network.dart';
 import '../network/jm_network/headers.dart';
 import '../network/res.dart';
 
-class BadRequestException {
+class BadRequestException implements Exception, DownloadResponseError {
   final String message;
 
-  const BadRequestException(this.message);
+  @override
+  final int? statusCode;
+
+  @override
+  final Duration? retryAfter;
+
+  const BadRequestException(this.message, {this.statusCode, this.retryAfter});
+
+  factory BadRequestException.fromDio(DioException error) => BadRequestException(
+        error.message.toString(),
+        statusCode: error.response?.statusCode,
+        retryAfter: downloadRetryAfter(error.response?.headers),
+      );
 
   @override
   String toString() => message;
@@ -55,14 +67,19 @@ class ImageManager {
   final dio = logDio(BaseOptions())
     ..interceptors.add(CookieManagerSql(SingleInstanceCookieJar.instance!));
 
+  // These sources supply their own cookies/headers. Reuse their connections
+  // without replacing those headers with cookies from the generic image jar.
+  final _sourceDio = logDio(BaseOptions());
+
   int ehgtLoading = 0;
 
   /// 获取图片, 适用于没有任何限制的图片链接
   Stream<DownloadProgress> getImage(final String url,
-      [Map<String, String>? headers]) async* {
-    await wait(url);
+      [Map<String, String>? headers, CancelToken? cancelToken]) async* {
+    await wait(url, cancelToken);
     loadingItems[url] = DownloadProgress(0, 1, url, "");
     CachingFile? caching;
+    var holdsEhgtSlot = false;
 
     try {
       final key = url;
@@ -89,15 +106,19 @@ class ImageManager {
       if (realUrl.contains("ehgt.org")) {
         if (ehgtLoading < 3) {
           ehgtLoading++;
+          holdsEhgtSlot = true;
           await Future.delayed(const Duration(milliseconds: 10));
         } else {
           while (ehgtLoading > 2) {
+            cancelToken?.throwIfCancelled();
             await Future.delayed(const Duration(milliseconds: 200));
           }
           ehgtLoading++;
+          holdsEhgtSlot = true;
         }
       }
       var dioRes = await dio.get<ResponseBody>(realUrl,
+          cancelToken: cancelToken,
           options:
               Options(responseType: ResponseType.stream, headers: headers));
       if (dioRes.data == null) {
@@ -131,17 +152,17 @@ class ImageManager {
         ext,
       );
     } catch (e, s) {
-      caching?.cancel();
+      await caching?.cancel();
       log("$e\n$s", "Network", LogLevel.error);
       if (e is DioException && e.type == DioExceptionType.badResponse) {
         var statusCode = e.response?.statusCode;
         if (statusCode != null && statusCode >= 400 && statusCode < 500) {
-          throw BadRequestException(e.message.toString());
+          throw BadRequestException.fromDio(e);
         }
       }
       rethrow;
     } finally {
-      if (url.contains("ehgt.org") || url.contains("s.exhentai.org")) {
+      if (holdsEhgtSlot) {
         ehgtLoading--;
       }
       loadingItems.remove(url);
@@ -149,13 +170,13 @@ class ImageManager {
   }
 
   Stream<DownloadProgress> getEhImageNew(
-      final Gallery gallery, final int page) async* {
+      final Gallery gallery, final int page, [CancelToken? cancelToken]) async* {
     final galleryLink = gallery.link;
     final cacheKey = "$galleryLink$page";
     final gid = getGalleryId(galleryLink);
 
     // check whether this image is loading
-    await wait(cacheKey);
+    await wait(cacheKey, cancelToken);
     loadingItems[cacheKey] = DownloadProgress(0, 1, cacheKey, "");
 
     CachingFile? caching;
@@ -175,13 +196,11 @@ class ImageManager {
       final savePath = cachingFile.file.path;
       yield DownloadProgress(0, 100, key, savePath);
 
-      final options = BaseOptions(
+      final imageOptions = Options(
           followRedirects: true,
-          connectTimeout: const Duration(seconds: 8),
           receiveTimeout: const Duration(seconds: 20),
           headers: {"user-agent": webUA, "cookie": EhNetwork().cookiesStr});
 
-      var dio = logDio(options);
 
       // Get imgKey
       final readerLink =
@@ -189,6 +208,7 @@ class ImageManager {
 
       Future<void> getShowKey() async {
         while (gallery.auth!["showKey"] == "loading") {
+          cancelToken?.throwIfCancelled();
           await Future.delayed(const Duration(milliseconds: 100));
         }
         if (gallery.auth!["showKey"] != null ||
@@ -270,8 +290,9 @@ class ImageManager {
             if (image == "") {
               throw "empty url";
             }
-            res = await dio.get<ResponseBody>(image,
-                options: Options(responseType: ResponseType.stream));
+            res = await _sourceDio.get<ResponseBody>(image,
+                cancelToken: cancelToken,
+                options: imageOptions.copyWith(responseType: ResponseType.stream));
             if (res.data!.headers["Content-Type"]?[0] ==
                     "text/html; charset=UTF-8" ||
                 res.data!.headers["content-type"]?[0] ==
@@ -279,6 +300,8 @@ class ImageManager {
               throw ImageExceedError();
             }
           } catch (e) {
+            cancelToken?.throwIfCancelled();
+            if (e is DioException && (e.response?.statusCode == 429 || e.response?.statusCode == 503)) rethrow;
             retryTimes++;
             if (retryTimes == 4) {
               throw "Failed to load image.\nMaximum number of retries reached.";
@@ -370,8 +393,9 @@ class ImageManager {
             if (image == "") {
               throw "empty url";
             }
-            res = await dio.get<ResponseBody>(image,
-                options: Options(responseType: ResponseType.stream));
+            res = await _sourceDio.get<ResponseBody>(image,
+                cancelToken: cancelToken,
+                options: imageOptions.copyWith(responseType: ResponseType.stream));
             if (res.data!.headers["Content-Type"]?[0] ==
                     "text/html; charset=UTF-8" ||
                 res.data!.headers["content-type"]?[0] ==
@@ -406,6 +430,8 @@ class ImageManager {
             totalBytes = currentBytes;
             break;
           } catch (e) {
+            cancelToken?.throwIfCancelled();
+            if (e is DioException && (e.response?.statusCode == 429 || e.response?.statusCode == 503)) rethrow;
             retryTimes++;
             if (retryTimes == 4) {
               throw "Failed to load image.\nMaximum number of retries reached.";
@@ -439,12 +465,12 @@ class ImageManager {
         ext,
       );
     } catch (e, s) {
-      caching?.cancel();
+      await caching?.cancel();
       LogManager.addLog(LogLevel.error, "Network", "$e\n$s");
       if (e is DioException && e.type == DioExceptionType.badResponse) {
         var statusCode = e.response?.statusCode;
         if (statusCode != null && statusCode >= 400 && statusCode < 500) {
-          throw BadRequestException(e.message.toString());
+          throw BadRequestException.fromDio(e);
         }
       }
       rethrow;
@@ -457,8 +483,8 @@ class ImageManager {
   ///
   /// 使用hash标识图片
   Stream<DownloadProgress> getHitomiImage(
-      HitomiFile image, String galleryId) async* {
-    await wait(image.hash);
+      HitomiFile image, String galleryId, [CancelToken? cancelToken]) async* {
+    await wait(image.hash, cancelToken);
     loadingItems[image.hash] = DownloadProgress(0, 1, image.hash, "");
     CachingFile? caching;
 
@@ -485,14 +511,14 @@ class ImageManager {
           break;
         }
       }
-      var dio = logDio();
-      dio.options.headers = {
+      final imageHeaders = <String, String>{
         "User-Agent": webUA,
         "Referer": "https://hitomi.la/reader/$galleryId.html"
       };
 
-      var res = await dio.get<ResponseBody>(url,
-          options: Options(responseType: ResponseType.stream));
+      var res = await _sourceDio.get<ResponseBody>(url,
+          cancelToken: cancelToken,
+          options: Options(responseType: ResponseType.stream, headers: imageHeaders));
       var stream = res.data!.stream;
       int? expectedBytes;
       try {
@@ -521,11 +547,11 @@ class ImageManager {
       yield DownloadProgress(currentBytes, currentBytes, url, savePath,
           data.takeBytes(), ext);
     } catch (e) {
-      caching?.cancel();
+      await caching?.cancel();
       if (e is DioException && e.type == DioExceptionType.badResponse) {
         var statusCode = e.response?.statusCode;
         if (statusCode != null && statusCode >= 400 && statusCode < 500) {
-          throw BadRequestException(e.message.toString());
+          throw BadRequestException.fromDio(e);
         }
       }
       rethrow;
@@ -538,10 +564,11 @@ class ImageManager {
   Stream<DownloadProgress> getJmImage(String url, Map<String, String>? headers,
       {required String epsId,
       required String scrambleId,
-      required String bookId}) async* {
+      required String bookId,
+      CancelToken? cancelToken}) async* {
     bookId = bookId.replaceAll(RegExp(r"\..+"), "");
     final urlWithoutParam = url.replaceAll(RegExp(r"\?.+"), "");
-    await wait(urlWithoutParam);
+    await wait(urlWithoutParam, cancelToken);
     loadingItems[urlWithoutParam] = DownloadProgress(0, 1, url, "");
     CachingFile? caching;
 
@@ -559,13 +586,12 @@ class ImageManager {
       final savePath = cachingFile.file.path;
       yield DownloadProgress(0, 1, url, savePath);
 
-      var dio = logDio();
-
       var bytes = <int>[];
       String? ext;
       try {
-        var res = await dio.get<ResponseBody>(
+        var res = await _sourceDio.get<ResponseBody>(
             url,
+            cancelToken: cancelToken,
             options: Options(
                 responseType: ResponseType.stream,
                 headers: getImgHeaders()
@@ -610,11 +636,11 @@ class ImageManager {
       );
       yield progress;
     } catch (e) {
-      caching?.cancel();
+      await caching?.cancel();
       if (e is DioException && e.type == DioExceptionType.badResponse) {
         var statusCode = e.response?.statusCode;
         if (statusCode != null && statusCode >= 400 && statusCode < 500) {
-          throw BadRequestException(e.message.toString());
+          throw BadRequestException.fromDio(e);
         }
       }
       rethrow;
@@ -624,9 +650,10 @@ class ImageManager {
   }
 
   Stream<DownloadProgress> getCustomImage(
-      String url, String comicId, String epId, String sourceKey) async* {
+      String url, String comicId, String epId, String sourceKey,
+      [CancelToken? cancelToken]) async* {
     var cacheKey = "$sourceKey$comicId$epId$url";
-    await wait(cacheKey);
+    await wait(cacheKey, cancelToken);
     loadingItems[cacheKey] = DownloadProgress(0, 1, cacheKey, "");
 
     var cache = await CacheManager().findCache(cacheKey);
@@ -654,6 +681,7 @@ class ImageManager {
       final savePath = caching.file.path;
 
       var res = await dio.request<ResponseBody>(config['url'] ?? url,
+          cancelToken: cancelToken,
           data: config['data'],
           options: Options(
               method: config['method'] ?? 'GET',
@@ -712,11 +740,11 @@ class ImageManager {
         ext,
       );
     } catch (e) {
-      caching?.cancel();
+      await caching?.cancel();
       if (e is DioException && e.type == DioExceptionType.badResponse) {
         var statusCode = e.response?.statusCode;
         if (statusCode != null && statusCode >= 400 && statusCode < 500) {
-          throw BadRequestException(e.message.toString());
+          throw BadRequestException.fromDio(e);
         }
       }
       rethrow;
@@ -725,11 +753,13 @@ class ImageManager {
     }
   }
 
-  Future<void> wait(String cacheKey) {
+  Future<void> wait(String cacheKey, [CancelToken? cancelToken]) {
+    cancelToken?.throwIfCancelled();
     if (!loadingItems.containsKey(cacheKey)) return Future<void>.value();
     int timeout = 50;
     return Future.doWhile(() async {
       await Future.delayed(const Duration(milliseconds: 300));
+      cancelToken?.throwIfCancelled();
       timeout--;
       if (timeout == 0) {
         loadingItems.remove(cacheKey);
@@ -818,11 +848,11 @@ class ImageManager {
           1, 1, url, savePath, result ?? imageData.takeBytes());
     } catch (e) {
       Log.error("Network", "Failed to load a image:\nUrl:$url\nError:$e");
-      caching?.cancel();
+      await caching?.cancel();
       if (e is DioException && e.type == DioExceptionType.badResponse) {
         var statusCode = e.response?.statusCode;
         if (statusCode != null && statusCode >= 400 && statusCode < 500) {
-          throw BadRequestException(e.message.toString());
+          throw BadRequestException.fromDio(e);
         }
       }
       rethrow;

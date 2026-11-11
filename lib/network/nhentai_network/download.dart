@@ -1,10 +1,8 @@
+import 'package:dio/dio.dart';
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:pica_comic/network/nhentai_network/nhentai_main_network.dart';
 import 'package:pica_comic/tools/translations.dart';
-import '../../base.dart';
 import '../../foundation/image_manager.dart';
 import '../../tools/io_tools.dart';
 import '../download_model.dart';
@@ -77,8 +75,8 @@ class NhentaiDownloadingItem extends DownloadingItem {
   }
 
   @override
-  Stream<DownloadProgress> downloadImage(String link) {
-    return ImageManager().getImage(link);
+  Stream<DownloadProgress> downloadImage(String link, {CancelToken? cancelToken}) {
+    return ImageManager().getImage(link, null, cancelToken);
   }
 
   @override

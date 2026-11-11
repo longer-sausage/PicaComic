@@ -373,6 +373,11 @@ class _DownloadingTileState extends State<_DownloadingTile> {
           "/${_bytesToSize(pagesCount!)}";
     }
 
-    return "$status  $speedInfo";
+    final isActive = DownloadManager().isDownloading &&
+        comic == DownloadManager().downloading.firstOrNull;
+    final parallel = isActive
+        ? '  ${'并行 @count'.tlParams({'count': comic.allowedLoadingNumber.toString()})}'
+        : '';
+    return "$status  $speedInfo$parallel";
   }
 }

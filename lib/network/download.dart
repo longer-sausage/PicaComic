@@ -56,6 +56,8 @@ class DownloadManager with _DownloadDb, WidgetsBindingObserver implements Listen
   int _downloadGeneration = 0;
   Future<void> _saveQueue = Future.value();
   int _saveGeneration = 0;
+  Timer? _saveTimer;
+  Completer<void>? _pendingSave;
   bool _resumeAfterBackgroundLimit = false;
   late final _runtime = DownloadRuntime(
     onExpired: _onBackgroundTimeExpired,
@@ -107,6 +109,11 @@ class DownloadManager with _DownloadDb, WidgetsBindingObserver implements Listen
     for (var listener in _listeners) {
       listener();
     }
+  }
+
+  void refreshDownloadConcurrency() {
+    downloading.firstOrNull?.refreshConcurrency();
+    notifyListeners();
   }
 
   ///获取下载目录
@@ -169,7 +176,7 @@ class DownloadManager with _DownloadDb, WidgetsBindingObserver implements Listen
     //读取数据
     var file = File("$path${pathSep}newDownload.json");
     if (!file.existsSync()) {
-      await _saveInfo();
+      await _saveInfo(flush: true);
     } else {
       try {
         var json = const JsonDecoder().convert(file.readAsStringSync());
@@ -181,7 +188,7 @@ class DownloadManager with _DownloadDb, WidgetsBindingObserver implements Listen
         LogManager.addLog(LogLevel.error, "IO",
             "Failed to read downloaded information\n$e\n$s");
         file.deleteSync();
-        await _saveInfo();
+        await _saveInfo(flush: true);
       }
     }
   }
@@ -254,6 +261,21 @@ class DownloadManager with _DownloadDb, WidgetsBindingObserver implements Listen
   ///储存当前的下载队列信息, 每完成一张图片的下载调用一次
   Future<void> _saveInfo({bool flush = false}) {
     notifyListeners();
+    final saved = _pendingSave ??= Completer<void>();
+    if (flush) {
+      _writePendingInfo(flush: true);
+    } else {
+      _saveTimer ??= Timer(const Duration(milliseconds: 200), _writePendingInfo);
+    }
+    return saved.future;
+  }
+
+  void _writePendingInfo({bool flush = false}) {
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    final pending = _pendingSave;
+    _pendingSave = null;
+    if (pending == null) return;
     var data = <String, dynamic>{};
     data["downloading"] = <Map<String, dynamic>>[];
     for (var item in downloading) {
@@ -265,13 +287,13 @@ class DownloadManager with _DownloadDb, WidgetsBindingObserver implements Listen
     final saved = _saveQueue.then((_) async {
       // Concurrent page completions share one file. Serialize writes and skip
       // snapshots already superseded by newer progress to avoid corrupting it.
-      if (generation != _saveGeneration) return;
+      if (generation != _saveGeneration && !flush) return;
       await file.writeAsString(snapshot, flush: flush);
     });
     _saveQueue = saved.catchError((Object e, StackTrace s) {
       LogManager.addLog(LogLevel.error, 'Download', 'Failed to save queue: $e\n$s');
     });
-    return saved;
+    saved.then(pending.complete, onError: pending.completeError);
   }
 
   /// move comic to first
@@ -299,7 +321,7 @@ class DownloadManager with _DownloadDb, WidgetsBindingObserver implements Listen
     final generation = _downloadGeneration;
     var task = downloading.removeFirst();
     _addToDb(await task.toDownloadedItem(), task.directory!);
-    await _saveInfo();
+    await _saveInfo(flush: true);
     StateController.findOrNull<DownloadPageLogic>()?.refresh();
     if (generation != _downloadGeneration) return;
     if (downloading.isNotEmpty && isDownloading) {
@@ -323,7 +345,10 @@ class DownloadManager with _DownloadDb, WidgetsBindingObserver implements Listen
     _resumeAfterBackgroundLimit = false;
     isDownloading = false;
     downloading.firstOrNull?.pause();
-    if (stopRuntime) unawaited(_runtime.stop());
+    if (stopRuntime) {
+      unawaited(_runtime.stop(
+          after: path == null ? null : _saveInfo(flush: true)));
+    }
     notifyListeners();
   }
 

@@ -1,6 +1,6 @@
+import 'package:dio/dio.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:pica_comic/network/download_model.dart';
 import 'package:pica_comic/foundation/image_manager.dart';
 import '../../base.dart';
@@ -95,10 +95,11 @@ class HitomiDownloadingItem extends DownloadingItem {
   }
 
   @override
-  Stream<DownloadProgress> downloadImage(String link) {
+  Stream<DownloadProgress> downloadImage(String link, {CancelToken? cancelToken}) {
     return ImageManager().getHitomiImage(
       HitomiFile.fromMap(const JsonDecoder().convert(link)),
       id.replaceFirst("hitomi", ""),
+      cancelToken,
     );
   }
 

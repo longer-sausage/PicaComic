@@ -94,6 +94,7 @@ class MyLogInterceptor implements Interceptor {
 
 class AppHttpAdapter implements HttpClientAdapter{
   HttpClientAdapter? adapter;
+  Future<HttpClientAdapter>? _adapterCreation;
 
   final bool http2;
 
@@ -129,7 +130,7 @@ class AppHttpAdapter implements HttpClientAdapter{
 
   @override
   Future<ResponseBody> fetch(RequestOptions o, Stream<Uint8List>? requestStream, Future<void>? cancelFuture) async{
-    adapter ??= await createAdapter(http2);
+    adapter ??= await (_adapterCreation ??= createAdapter(http2));
     int retry = 0;
     while(true){
       try{
@@ -138,6 +139,7 @@ class AppHttpAdapter implements HttpClientAdapter{
       }
       catch(e){
         if(e is DioException) {
+          if (CancelToken.isCancel(e)) rethrow;
           if(e.response?.statusCode != null) {
             var code = e.response!.statusCode!;
             if(code >= 400 && code < 500) {

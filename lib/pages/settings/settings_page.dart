@@ -568,18 +568,34 @@ class _SettingsPageState extends State<SettingsPage> implements PopEntry{
             },
           ),
         ),
-        ListTile(
-          title: Text("下载并行".tl),
-          leading: const Icon(Icons.download),
-          trailing: Select(
-            initialValue: ["1", "2", "4", "6", "8", "16"].indexOf(appdata.settings[79]),
-            values: const ["1", "2", "4", "6", "8", "16"],
-            onChange: (value) {
-              appdata.settings[79] = ["1", "2", "4", "6", "8", "16"][value];
-              appdata.updateSettings();
-            },
-          ),
+        SwitchListTile(
+          title: Text('动态调整下载并行'.tl),
+          subtitle: Text('根据下载速度和响应自动调整并行数（1–16）'.tl),
+          secondary: const Icon(Icons.speed),
+          value: appdata.appSettings.adaptiveDownloadConcurrency,
+          onChanged: (value) {
+            appdata.appSettings.adaptiveDownloadConcurrency = value;
+            appdata.updateSettings();
+            DownloadManager().refreshDownloadConcurrency();
+            setState(() {});
+          },
         ),
+        if (!appdata.appSettings.adaptiveDownloadConcurrency)
+          ListTile(
+            title: Text("下载并行".tl),
+            leading: const Icon(Icons.download),
+            trailing: Select(
+              initialValue: [1, 2, 4, 6, 8, 16]
+                  .indexOf(appdata.appSettings.downloadConcurrency)
+                  .clamp(0, 5),
+              values: const ["1", "2", "4", "6", "8", "16"],
+              onChange: (value) {
+                appdata.settings[79] = ["1", "2", "4", "6", "8", "16"][value];
+                appdata.updateSettings();
+                DownloadManager().refreshDownloadConcurrency();
+              },
+            ),
+          ),
         if(App.isAndroid)
           ListTile(
             title: Text("应用链接".tl),

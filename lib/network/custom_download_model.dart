@@ -1,6 +1,5 @@
-import 'dart:convert';
+import 'package:dio/dio.dart';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:pica_comic/base.dart';
 import 'package:pica_comic/comic_source/comic_source.dart';
@@ -105,15 +104,15 @@ class CustomDownloadingItem extends DownloadingItem {
   @override
   bool get haveEps => comic.chapters != null;
 
-  Stream<DownloadProgress> _getImage(String url) {
+  Stream<DownloadProgress> _getImage(String url, CancelToken? cancelToken) {
     if (source.getImageLoadingConfig != null) {
       int ep = links!.keys.elementAt(downloadingEp);
       var config = source.getImageLoadingConfig!(url, comic.comicId,
           comic.chapters?.keys.elementAtOrNull(ep - 1) ?? comic.comicId);
       return ImageManager()
-          .getImage(config["url"] ?? url, Map.from(config['headers'] ?? {}));
+          .getImage(config["url"] ?? url, Map.from(config['headers'] ?? {}), cancelToken);
     }
-    return ImageManager().getImage(url);
+    return ImageManager().getImage(url, null, cancelToken);
   }
 
   @override
@@ -145,16 +144,10 @@ class CustomDownloadingItem extends DownloadingItem {
   Future<Map<int, List<String>>> getLinks() async {
     var links = <int, List<String>>{};
     if (comic.chapters != null) {
-      var futures = <Future>[];
-      for (var i in _downloadEps) {
-        futures.add(getOneEp(i, links));
-        await Future.delayed(const Duration(milliseconds: 200));
-        if (futures.length % 5 == 0) {
-          await Future.wait(futures);
-          futures.clear();
-        }
-      }
-      await Future.wait(futures);
+      return loadDownloadChapters(_downloadEps.map((i) => i + 1), (ep) async {
+        await getOneEp(ep - 1, links);
+        return links[ep]!;
+      });
     } else {
       var res = await source.loadComicPages!(comic.comicId, null);
       links[0] = res.data;
@@ -211,7 +204,7 @@ class CustomDownloadingItem extends DownloadingItem {
   }
 
   @override
-  Stream<DownloadProgress> downloadImage(String link) {
-    return _getImage(link);
+  Stream<DownloadProgress> downloadImage(String link, {CancelToken? cancelToken}) {
+    return _getImage(link, cancelToken);
   }
 }
