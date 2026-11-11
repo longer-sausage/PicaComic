@@ -1,0 +1,218 @@
+name: Build and release
+
+on:
+  push:
+    tags:
+      - '**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.41.6'
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    if: ${{ !github.event.deleted }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android
+            os: ubuntu-24.04
+          - platform: windows
+            os: windows-2022
+          - platform: linux
+            os: ubuntu-24.04
+          - platform: ios
+            os: macos-15
+          - platform: macos
+            os: macos-15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Configure Android signing
+        if: matrix.platform == 'android'
+        shell: python
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          import base64
+          import os
+          from pathlib import Path
+
+          required = (
+              'ANDROID_KEYSTORE_BASE64', 'ANDROID_STORE_PASSWORD',
+              'ANDROID_KEY_ALIAS', 'ANDROID_KEY_PASSWORD',
+          )
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit('Missing repository secrets: ' + ', '.join(missing))
+
+          keystore = ''.join(os.environ['ANDROID_KEYSTORE_BASE64'].split())
+          Path('android/app/release.jks').write_bytes(base64.b64decode(keystore, validate=True))
+
+          def escape_property(value):
+              # Properties.load(InputStream) requires Unicode escapes for non-ASCII text.
+              result = ''
+              encoded = value.encode('utf-16-be')
+              for index in range(0, len(encoded), 2):
+                  code = int.from_bytes(encoded[index:index + 2], 'big')
+                  character = chr(code)
+                  if character in '\\ =:#!':
+                      result += '\\' + character
+                  elif code < 32 or code > 126:
+                      result += f'\\u{code:04x}'
+                  else:
+                      result += character
+              return result
+
+          properties = {
+              'storeFile': 'release.jks',
+              'storePassword': os.environ['ANDROID_STORE_PASSWORD'],
+              'keyAlias': os.environ['ANDROID_KEY_ALIAS'],
+              'keyPassword': os.environ['ANDROID_KEY_PASSWORD'],
+          }
+          Path('android/key.properties').write_text(
+              ''.join(f'{key}={escape_property(value)}\n' for key, value in properties.items()),
+              encoding='ascii',
+          )
+
+      - name: Set up Java
+        if: matrix.platform == 'android'
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libwebkit2gtk-4.1-dev
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Include the Windows font
+        if: matrix.platform == 'windows'
+        shell: python
+        run: |
+          from pathlib import Path
+
+          pubspec = Path('pubspec.yaml')
+          with pubspec.open('a', encoding='utf-8') as output:
+              output.write('\n  fonts:\n    - family: font\n      fonts:\n        - asset: fonts/NotoSansSC-Regular.ttf\n')
+
+      - name: Create the package directory
+        run: mkdir -p dist
+
+      - name: Build Android APKs
+        if: matrix.platform == 'android'
+        run: |
+          flutter build apk --release --target-platform android-arm64,android-x64
+          cp build/app/outputs/apk/release/*.apk dist/
+
+      - name: Build Windows
+        if: matrix.platform == 'windows'
+        run: flutter build windows --release
+
+      - name: Package Windows
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          & "$env:SystemRoot/System32/tar.exe" -a -c -f dist/PicaComic-windows-x64.zip -C build/windows/x64/runner/Release .
+
+      - name: Build Linux
+        if: matrix.platform == 'linux'
+        run: |
+          flutter build linux --release
+          tar -czf dist/PicaComic-linux-x64.tar.gz -C build/linux/x64/release/bundle .
+
+      - name: Build iOS (unsigned)
+        if: matrix.platform == 'ios'
+        run: |
+          flutter build ios --release --no-codesign
+          mkdir -p build/ios/iphoneos/Payload
+          mv build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/
+          ditto -c -k --keepParent build/ios/iphoneos/Payload dist/PicaComic-ios-unsigned.ipa
+
+      - name: Build macOS
+        if: matrix.platform == 'macos'
+        run: |
+          flutter build macos --release
+          ditto -c -k --sequesterRsrc --keepParent build/macos/Build/Products/Release/pica_comic.app dist/PicaComic-macos.zip
+
+      - name: Upload release packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+          overwrite: true
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Download all release packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update the release with an empty body
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          # A moved or deleted tag must not publish packages from an older commit.
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
+          if [ "$(git rev-parse 'FETCH_HEAD^{commit}')" != "$(git rev-parse HEAD)" ]; then
+            echo '::error::The tag changed during the build. Skipping this release.'
+            exit 1
+          fi
+
+          if ! gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes ""
+          fi
+
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --title "$RELEASE_TAG" --notes ""

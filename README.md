@@ -34,6 +34,34 @@ git clone https://github.com/longer-sausage/PicaComic
 2. Install flutter: https://docs.flutter.dev/get-started/install
 3. Build Application: https://docs.flutter.dev/deployment
 
+### Automated releases
+
+Pushing a new or updated Git tag runs `.github/workflows/release.yml`. It builds
+Android APKs (arm64, x86_64 and universal), a Windows x64 ZIP, a Linux x64 tarball,
+an unsigned iOS IPA, and a macOS ZIP with Flutter 3.41.6. Once every build succeeds,
+the packages are published to the tag's GitHub Release with an empty body.
+Re-running the workflow or updating the same tag replaces assets with matching
+names and clears the release body. Deleting a tag does not publish a release.
+Package versions come from `pubspec.yaml`; update it before creating a version tag.
+
+Configure these repository secrets under **Settings > Secrets and variables >
+Actions** before the first release, using the same Android signing key as local
+release builds:
+
+| Secret | Value |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | Base64-encoded contents of the release keystore |
+| `ANDROID_STORE_PASSWORD` | Keystore password (`storePassword`) |
+| `ANDROID_KEY_ALIAS` | Signing key alias (`keyAlias`) |
+| `ANDROID_KEY_PASSWORD` | Signing key password (`keyPassword`) |
+
+After committing the workflow and updating the package version, publish a tag:
+
+```shell
+git tag v4.2.12
+git push origin v4.2.12
+```
+
 ## Introduction
 
 ### Built-in Comic Source
