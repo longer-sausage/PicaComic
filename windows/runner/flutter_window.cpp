@@ -63,6 +63,28 @@ bool FlutterWindow::OnCreate() {
     }
     RegisterPlugins(flutter_controller_->engine());
 
+    const flutter::MethodChannel<> downloads(
+        flutter_controller_->engine()->messenger(),
+        "com.github.pacalini.pica_comic/download",
+        &flutter::StandardMethodCodec::GetInstance());
+    downloads.SetMethodCallHandler(
+        [this](const flutter::MethodCall<>& call,
+               const std::unique_ptr<flutter::MethodResult<>>& result) {
+            if (call.method_name() != "start" && call.method_name() != "stop") {
+                result->NotImplemented();
+                return;
+            }
+            const bool active = call.method_name() == "start";
+            // Keep the system awake while allowing the display to turn off.
+            if (!SetThreadExecutionState(ES_CONTINUOUS |
+                    (active ? ES_SYSTEM_REQUIRED : 0))) {
+                result->Error("download_power", "Unable to change sleep protection");
+                return;
+            }
+            download_active_ = active;
+            result->Success();
+        });
+
     //检查系统代理的MethodChannel
     const flutter::MethodChannel<> channel(
         flutter_controller_->engine()->messenger(), "com.github.pacalini.pica_comic/proxy",
@@ -147,6 +169,10 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  if (download_active_) {
+    SetThreadExecutionState(ES_CONTINUOUS);
+    download_active_ = false;
+  }
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

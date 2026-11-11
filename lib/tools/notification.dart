@@ -1,6 +1,8 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:pica_comic/tools/translations.dart';
 import 'package:pica_comic/pages/downloading_page.dart';
+import 'package:pica_comic/tools/download_runtime.dart';
+import 'package:pica_comic/foundation/log.dart';
 import '../foundation/app.dart';
 
 class Notifications {
@@ -65,6 +67,19 @@ class Notifications {
   void sendProgressNotification(
       int progress, int total, String title, String content) async {
     if (!(App.isAndroid || App.isIOS)) return;
+    if (App.isAndroid) {
+      try {
+        await DownloadRuntime.channel.invokeMethod<void>('update', {
+          'progress': progress,
+          'total': total,
+          'title': title,
+          'content': content,
+        });
+      } catch (e, s) {
+        LogManager.addLog(LogLevel.warning, 'Download', '$e\n$s');
+      }
+      return;
+    }
     AndroidNotificationDetails androidNotificationDetails =
         AndroidNotificationDetails('download', '下载漫画'.tl,
             channelDescription: '显示下载进度'.tl,
@@ -87,7 +102,9 @@ class Notifications {
   }
 
   void endProgress() async {
-    if (!(App.isAndroid || App.isIOS)) return;
+    // Android's progress notification belongs to the download service, which
+    // removes it only after releasing the download's power-management locks.
+    if (!App.isIOS) return;
     await flutterLocalNotificationsPlugin!.cancel(progressId);
   }
 

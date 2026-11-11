@@ -5,6 +5,7 @@ import 'package:pica_comic/foundation/image_loader/cached_image.dart';
 import 'package:pica_comic/network/download.dart';
 import 'package:pica_comic/network/eh_network/eh_download_model.dart';
 import 'package:pica_comic/tools/translations.dart';
+import 'package:pica_comic/tools/download_runtime.dart';
 import 'package:pica_comic/network/download_model.dart';
 import 'package:pica_comic/components/components.dart';
 
@@ -49,6 +50,44 @@ class _DownloadingPageState extends State<DownloadingPage> {
   }
 
   var key = GlobalKey<_DownloadingTileState>();
+
+  Future<void> showBackgroundDownloadSettings() async {
+    bool? ignored;
+    try {
+      ignored = await DownloadRuntime.channel
+          .invokeMethod<bool>('batteryOptimizationsIgnored');
+    } catch (_) {
+      // The system settings can still be opened if this status is unavailable.
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('后台下载设置'.tl),
+        content: Text([
+          if (ignored == true) '已允许忽略电池优化'.tl,
+          '在系统电池设置中将 Pica Comic 设为“不受限制”或“不优化”，可减少后台和锁屏时的下载降速。'.tl,
+        ].join('\n\n')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: Text('取消'.tl),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.of(dialogContext).pop();
+              try {
+                await DownloadRuntime.channel.invokeMethod<void>('batterySettings');
+              } catch (_) {
+                if (mounted) showToast(message: '无法打开系统设置'.tl);
+              }
+            },
+            child: Text('打开电池设置'.tl),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -147,6 +186,13 @@ class _DownloadingPageState extends State<DownloadingPage> {
 
     return PopUpWidgetScaffold(
       title: "下载管理器".tl,
+      tailing: App.isAndroid ? [
+        IconButton(
+          onPressed: showBackgroundDownloadSettings,
+          tooltip: '后台下载设置'.tl,
+          icon: const Icon(Icons.battery_saver_outlined),
+        ),
+      ] : null,
       body: body,
     );
   }

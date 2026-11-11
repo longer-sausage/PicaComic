@@ -4,11 +4,57 @@ import flutter_local_notifications
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
+  private var downloadTask: UIBackgroundTaskIdentifier = .invalid
+  private var downloadChannel: FlutterMethodChannel?
+
+  private func endDownloadTask(_ expectedTask: UIBackgroundTaskIdentifier? = nil) {
+    guard downloadTask != .invalid else { return }
+    if let expectedTask = expectedTask, downloadTask != expectedTask { return }
+    UIApplication.shared.endBackgroundTask(downloadTask)
+    downloadTask = .invalid
+  }
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     let controller: FlutterViewController = window?.rootViewController as! FlutterViewController
+
+    let downloads = FlutterMethodChannel(
+      name: "com.github.pacalini.pica_comic/download",
+      binaryMessenger: controller.binaryMessenger)
+    downloadChannel = downloads
+    downloads.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else { return result(nil) }
+      switch call.method {
+      case "start":
+        if self.downloadTask == .invalid {
+          // Register before entering the background so Dart workers can continue
+          // for the time granted by iOS. This is not an unlimited background mode.
+          self.downloadTask = application.beginBackgroundTask(withName: "Comic downloads") { [weak self] in
+            guard let self = self else { return }
+            let expiringTask = self.downloadTask
+            self.downloadChannel?.invokeMethod("expired", arguments: nil) { [weak self] _ in
+              self?.endDownloadTask(expiringTask)
+            }
+            // Always finish the task, even if the Dart isolate cannot respond.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+              self?.endDownloadTask(expiringTask)
+            }
+          }
+          if self.downloadTask == .invalid {
+            result(FlutterError(code: "background_task", message: "iOS denied background execution", details: nil))
+            return
+          }
+        }
+        result(nil)
+      case "stop":
+        self.endDownloadTask()
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
 
     FlutterLocalNotificationsPlugin.setPluginRegistrantCallback { (registry) in
       GeneratedPluginRegistrant.register(with: registry)

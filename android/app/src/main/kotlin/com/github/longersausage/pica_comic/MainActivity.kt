@@ -19,10 +19,62 @@ import com.google.android.gms.common.GoogleApiAvailability
 class MainActivity: FlutterFragmentActivity() {
     var volumeListen = VolumeListen()
     var listening = false
+    private var downloadChannel: MethodChannel? = null
 
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         GeneratedPluginRegistrant.registerWith(flutterEngine)
+
+        downloadChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
+            "com.github.pacalini.pica_comic/download").apply {
+            setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "start" -> DownloadService.start(applicationContext,
+                        call.argument<String>("title") ?: "下载中",
+                        call.argument<String>("content") ?: "Pica Comic") { error ->
+                        if (error == null) result.success(null)
+                        else result.error("download_service", error.message, null)
+                    }
+                    "stop" -> DownloadService.stop(applicationContext) { result.success(null) }
+                    "update" -> {
+                        DownloadService.updateProgress(
+                            call.argument<String>("title") ?: "下载中",
+                            call.argument<String>("content") ?: "Pica Comic",
+                            call.argument<Number>("progress")?.toLong() ?: 0L,
+                            call.argument<Number>("total")?.toLong() ?: 0L)
+                        result.success(null)
+                    }
+                    "batteryOptimizationsIgnored" -> {
+                        val power = getSystemService(POWER_SERVICE) as android.os.PowerManager
+                        result.success(power.isIgnoringBatteryOptimizations(packageName))
+                    }
+                    "batterySettings" -> {
+                        try {
+                            startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                            result.success(null)
+                        } catch (e: android.content.ActivityNotFoundException) {
+                            try {
+                                startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.parse("package:$packageName")))
+                                result.success(null)
+                            } catch (e: RuntimeException) {
+                                result.error("battery_settings", e.message, null)
+                            }
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        }
+        DownloadService.onExpired = { finished ->
+            val downloads = downloadChannel
+            if (downloads == null) finished()
+            else downloads.invokeMethod("expired", null, object : MethodChannel.Result {
+                override fun success(result: Any?) = finished()
+                override fun error(code: String, message: String?, details: Any?) = finished()
+                override fun notImplemented() = finished()
+            })
+        }
 
         val channel = EventChannel(flutterEngine.dartExecutor.binaryMessenger, "com.github.pacalini.pica_comic/volume")
         channel.setStreamHandler(
@@ -119,6 +171,14 @@ class MainActivity: FlutterFragmentActivity() {
             }
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        downloadChannel?.setMethodCallHandler(null)
+        downloadChannel = null
+        DownloadService.onExpired = null
+        DownloadService.stop(applicationContext)
+        super.cleanUpFlutterEngine(flutterEngine)
     }
 
     private fun getDeviceInfo(): String{

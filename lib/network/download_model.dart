@@ -97,6 +97,7 @@ abstract class DownloadingItem with _TransferSpeedMixin {
   int _runtimeKey = 0;
 
   int _retryTimes = 0;
+  bool _paused = true;
 
   String? directory;
 
@@ -144,13 +145,16 @@ abstract class DownloadingItem with _TransferSpeedMixin {
 
   /// retry when error
   Future<void> retry() async {
+    final currentKey = _runtimeKey;
     _retryTimes++;
     if (_retryTimes > 4) {
       onError?.call();
       _retryTimes = 0;
     } else {
       await Future.delayed(Duration(seconds: 2 << _retryTimes));
-      start();
+      if (currentKey == _runtimeKey) {
+        start();
+      }
     }
   }
 
@@ -180,12 +184,14 @@ abstract class DownloadingItem with _TransferSpeedMixin {
     }
     if (_downloading["$ep$index"] == null ||
         _downloading["$ep$index"]!.error != null) {
+      final currentKey = _runtimeKey;
       _downloading["$ep$index"] = _ImageDownloadWrapper(
         downloadImage(link),
         downloadTo,
         basename,
         onData,
         () {
+          if (_paused || currentKey != _runtimeKey) return;
           updateInfo?.call();
           _scheduleTasks(ep, this.index);
         },
@@ -194,6 +200,7 @@ abstract class DownloadingItem with _TransferSpeedMixin {
   }
 
   void _scheduleTasks(int ep, int index) {
+    if (_paused) return;
     var urls = links![ep]!;
     int downloading = 0;
     for (int i = index; i < urls.length; i++) {
@@ -213,6 +220,7 @@ abstract class DownloadingItem with _TransferSpeedMixin {
   /// begin or continue downloading
   void start() async {
     _runtimeKey++;
+    _paused = false;
     var currentKey = _runtimeKey;
     try {
       await onStart();
@@ -222,7 +230,9 @@ abstract class DownloadingItem with _TransferSpeedMixin {
 
       // get image links and cover
       links ??= await getLinks();
+      if (_runtimeKey != currentKey) return;
       await downloadCover();
+      if (_runtimeKey != currentKey) return;
       runRecorder();
 
       // download images
@@ -257,11 +267,15 @@ abstract class DownloadingItem with _TransferSpeedMixin {
       }
 
       // finish downloading
+      if (_runtimeKey != currentKey) return;
       if (DownloadManager().downloading.firstOrNull != this) return;
+      _paused = true;
+      stopRecorder();
       onFinish?.call();
       _stopAllTasks();
     } catch (e, s) {
       if (currentKey != _runtimeKey) return;
+      _paused = true;
       LogManager.addLog(LogLevel.error, "Download", "$e\n$s");
       retry();
     }
@@ -283,6 +297,7 @@ abstract class DownloadingItem with _TransferSpeedMixin {
   /// pause downloading
   void pause() {
     _runtimeKey++;
+    _paused = true;
     stopRecorder();
     notifications.endProgress();
     _stopAllTasks();
@@ -292,6 +307,7 @@ abstract class DownloadingItem with _TransferSpeedMixin {
   /// stop downloading
   void stop() {
     _runtimeKey++;
+    _paused = true;
     stopRecorder();
     _stopAllTasks();
     notifications.endProgress();

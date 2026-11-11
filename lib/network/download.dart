@@ -1,8 +1,9 @@
+import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pica_comic/base.dart';
 import 'package:pica_comic/comic_source/comic_source.dart';
@@ -25,6 +26,7 @@ import 'package:pica_comic/network/nhentai_network/download.dart';
 import 'package:pica_comic/network/picacg_network/picacg_download_model.dart';
 import 'package:pica_comic/pages/download_page.dart';
 import 'package:pica_comic/tools/extensions.dart';
+import 'package:pica_comic/tools/download_runtime.dart';
 import 'package:pica_comic/tools/io_extensions.dart';
 import 'package:pica_comic/tools/io_tools.dart';
 import 'package:pica_comic/tools/translations.dart';
@@ -35,7 +37,7 @@ import 'picacg_network/models.dart';
 
 typedef DownloadingCallback = void Function();
 
-class DownloadManager with _DownloadDb implements Listenable {
+class DownloadManager with _DownloadDb, WidgetsBindingObserver implements Listenable {
   static DownloadManager? cache;
 
   factory DownloadManager() => cache ?? (cache = DownloadManager._create());
@@ -50,6 +52,32 @@ class DownloadManager with _DownloadDb implements Listenable {
 
   ///是否正在下载
   bool isDownloading = false;
+
+  int _downloadGeneration = 0;
+  Future<void> _saveQueue = Future.value();
+  int _saveGeneration = 0;
+  bool _resumeAfterBackgroundLimit = false;
+  late final _runtime = DownloadRuntime(
+    onExpired: _onBackgroundTimeExpired,
+    onError: (e, s) => LogManager.addLog(
+        LogLevel.warning, 'Download', 'Background download protection: $e\n$s'),
+  );
+
+  Future<void> _onBackgroundTimeExpired() async {
+    if (!isDownloading) return;
+    _pause(stopRuntime: false);
+    _resumeAfterBackgroundLimit = true;
+    // Reserve this stop before any subsequent resume, keeping the execution
+    // assertion until the latest progress is on disk.
+    await _runtime.stop(after: _saveInfo(flush: true));
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _resumeAfterBackgroundLimit) {
+      unawaited(start());
+    }
+  }
 
   ///是否出现了错误
   bool _error = false;
@@ -111,6 +139,8 @@ class DownloadManager with _DownloadDb implements Listenable {
 
   ///更换下载目录
   Future<String> updatePath(String newPath, {bool transform = true}) async {
+    pause();
+    await _saveQueue;
     if (transform) {
       var source = Directory(path!);
       final appPath = await getApplicationSupportDirectory();
@@ -199,8 +229,12 @@ class DownloadManager with _DownloadDb implements Listenable {
   }
 
   void dispose() {
+    pause();
+    WidgetsBinding.instance.removeObserver(this);
     _runInit = false;
-    downloading.forEach((e) => e.stop());
+    for (final item in downloading) {
+      item.stop();
+    }
     downloading.clear();
     _db?.dispose();
     _db = null;
@@ -210,13 +244,15 @@ class DownloadManager with _DownloadDb implements Listenable {
   Future<void> init() async {
     if (_runInit) return;
     _runInit = true;
+    WidgetsBinding.instance.removeObserver(this);
+    WidgetsBinding.instance.addObserver(this);
     await _getPath();
     await _getInfo();
     await _initDb();
   }
 
   ///储存当前的下载队列信息, 每完成一张图片的下载调用一次
-  Future<void> _saveInfo() async {
+  Future<void> _saveInfo({bool flush = false}) {
     notifyListeners();
     var data = <String, dynamic>{};
     data["downloading"] = <Map<String, dynamic>>[];
@@ -224,7 +260,18 @@ class DownloadManager with _DownloadDb implements Listenable {
       data["downloading"].add(item.toMap());
     }
     var file = File("$path${pathSep}newDownload.json");
-    await file.writeAsString(const JsonEncoder().convert(data));
+    final snapshot = const JsonEncoder().convert(data);
+    final generation = ++_saveGeneration;
+    final saved = _saveQueue.then((_) async {
+      // Concurrent page completions share one file. Serialize writes and skip
+      // snapshots already superseded by newer progress to avoid corrupting it.
+      if (generation != _saveGeneration) return;
+      await file.writeAsString(snapshot, flush: flush);
+    });
+    _saveQueue = saved.catchError((Object e, StackTrace s) {
+      LogManager.addLog(LogLevel.error, 'Download', 'Failed to save queue: $e\n$s');
+    });
+    return saved;
   }
 
   /// move comic to first
@@ -249,24 +296,35 @@ class DownloadManager with _DownloadDb implements Listenable {
 
   ///当一个下载任务完成时, 调用此函数
   void _onFinish() async {
+    final generation = _downloadGeneration;
     var task = downloading.removeFirst();
     _addToDb(await task.toDownloadedItem(), task.directory!);
     await _saveInfo();
     StateController.findOrNull<DownloadPageLogic>()?.refresh();
-    if (downloading.isNotEmpty) {
+    if (generation != _downloadGeneration) return;
+    if (downloading.isNotEmpty && isDownloading) {
       //清除已完成的任务, 开始下一个任务
-      downloading.first.start();
-    } else {
+      unawaited(_startCurrentDownload());
+    } else if (downloading.isEmpty) {
       //标记状态为未在下载
       isDownloading = false;
+      _downloadGeneration++;
+      unawaited(_runtime.stop());
       notifications.endProgress();
     }
+    notifyListeners();
   }
 
   ///暂停下载
-  void pause() {
+  void pause() => _pause();
+
+  void _pause({bool stopRuntime = true}) {
+    _downloadGeneration++;
+    _resumeAfterBackgroundLimit = false;
     isDownloading = false;
-    downloading.first.pause();
+    downloading.firstOrNull?.pause();
+    if (stopRuntime) unawaited(_runtime.stop());
+    notifyListeners();
   }
 
   ///出现错误时调用此函数
@@ -278,11 +336,26 @@ class DownloadManager with _DownloadDb implements Listenable {
   }
 
   ///开始或继续下载
-  void start() {
+  Future<void> start() async {
     _error = false;
-    if (isDownloading) return;
-    downloading.first.start();
+    _resumeAfterBackgroundLimit = false;
+    if (isDownloading || downloading.isEmpty) return;
+    await _startCurrentDownload();
+  }
+
+  Future<void> _startCurrentDownload() async {
+    final task = downloading.first;
+    final generation = ++_downloadGeneration;
     isDownloading = true;
+    // Establish protection while the app is still visible. Android restricts
+    // starting a foreground service after the app has entered the background.
+    await _runtime.start(
+        title: '下载中'.tl, content: '${downloading.length} Tasks');
+    if (!isDownloading || generation != _downloadGeneration ||
+        downloading.firstOrNull != task) {
+      return;
+    }
+    task.start();
   }
 
   ///取消指定的下载
@@ -292,6 +365,8 @@ class DownloadManager with _DownloadDb implements Listenable {
       if (i.id == id) break;
       index++;
     }
+    if (index == downloading.length) return;
+    _resumeAfterBackgroundLimit = false;
 
     if (index == 0) {
       _error = false;
@@ -305,9 +380,11 @@ class DownloadManager with _DownloadDb implements Listenable {
 
     if (downloading.isEmpty) {
       isDownloading = false;
+      _downloadGeneration++;
+      unawaited(_runtime.stop());
       notifications.endProgress();
-    } else {
-      downloading.first.start();
+    } else if (index == 0 && isDownloading) {
+      unawaited(_startCurrentDownload());
     }
     _saveInfo();
   }
@@ -460,10 +537,7 @@ extension AddDownloadExt on DownloadManager {
     downloading.addLast(PicDownloadingItem(
         comic, downloadEps, _onFinish, _onError, _saveInfo, comic.id));
     _saveInfo();
-    if (!isDownloading) {
-      downloading.first.start();
-      isDownloading = true;
-    }
+    unawaited(start());
   }
 
   ///添加E-Hentai下载
@@ -472,10 +546,7 @@ extension AddDownloadExt on DownloadManager {
     downloading.addLast(
         EhDownloadingItem(gallery, _onFinish, _onError, _saveInfo, id, type));
     _saveInfo();
-    if (!isDownloading) {
-      downloading.first.start();
-      isDownloading = true;
-    }
+    unawaited(start());
   }
 
   ///添加禁漫下载
@@ -483,10 +554,7 @@ extension AddDownloadExt on DownloadManager {
     downloading.addLast(JmDownloadingItem(
         comic, downloadEps, _onFinish, _onError, _saveInfo, "jm${comic.id}"));
     _saveInfo();
-    if (!isDownloading) {
-      downloading.first.start();
-      isDownloading = true;
-    }
+    unawaited(start());
   }
 
   ///添加Hitomi下载
@@ -495,10 +563,7 @@ extension AddDownloadExt on DownloadManager {
     downloading.addLast(HitomiDownloadingItem(
         comic, cover, link, _onFinish, _onError, _saveInfo, id));
     _saveInfo();
-    if (!isDownloading) {
-      downloading.first.start();
-      isDownloading = true;
-    }
+    unawaited(start());
   }
 
   ///添加绅士漫画下载
@@ -507,10 +572,7 @@ extension AddDownloadExt on DownloadManager {
     downloading
         .addLast(DownloadingHtComic(comic, _onFinish, _onError, _saveInfo, id));
     _saveInfo();
-    if (!isDownloading) {
-      downloading.first.start();
-      isDownloading = true;
-    }
+    unawaited(start());
   }
 
   void addNhentaiDownload(NhentaiComic comic) {
@@ -518,10 +580,7 @@ extension AddDownloadExt on DownloadManager {
     downloading.addLast(
         NhentaiDownloadingItem(comic, _onFinish, _onError, _saveInfo, id));
     _saveInfo();
-    if (!isDownloading) {
-      downloading.first.start();
-      isDownloading = true;
-    }
+    unawaited(start());
   }
 
   void addCustomDownload(ComicInfoData comic, List<int> downloadEps) {
@@ -529,10 +588,7 @@ extension AddDownloadExt on DownloadManager {
     downloading.addLast(CustomDownloadingItem(
         comic, downloadEps, _onFinish, _onError, _saveInfo, id));
     _saveInfo();
-    if (!isDownloading) {
-      downloading.first.start();
-      isDownloading = true;
-    }
+    unawaited(start());
   }
 
   void addFavoriteDownload(FavoriteItem comic) {
@@ -548,10 +604,7 @@ extension AddDownloadExt on DownloadManager {
     downloading.addLast(
         FavoriteDownloading(comic, _onFinish, _onError, _saveInfo, id));
     _saveInfo();
-    if (!isDownloading) {
-      downloading.first.start();
-      isDownloading = true;
-    }
+    unawaited(start());
   }
 }
 

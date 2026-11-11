@@ -1,5 +1,7 @@
 #include "my_application.h"
 
+#include <cstring>
+
 #include <flutter_linux/flutter_linux.h>
 #ifdef GDK_WINDOWING_X11
 #include <gdk/gdkx.h>
@@ -10,9 +12,43 @@
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
+  guint download_inhibitor;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
+
+static void stop_download_protection(MyApplication* self) {
+  if (self->download_inhibitor != 0) {
+    gtk_application_uninhibit(GTK_APPLICATION(self), self->download_inhibitor);
+    self->download_inhibitor = 0;
+  }
+}
+
+static void download_method_call(FlMethodChannel* channel, FlMethodCall* call,
+                                 gpointer user_data) {
+  MyApplication* self = MY_APPLICATION(user_data);
+  const gchar* method = fl_method_call_get_name(call);
+  g_autoptr(FlMethodResponse) response = nullptr;
+  if (strcmp(method, "start") == 0) {
+    if (self->download_inhibitor == 0) {
+      self->download_inhibitor = gtk_application_inhibit(
+          GTK_APPLICATION(self), nullptr, GTK_APPLICATION_INHIBIT_SUSPEND,
+          "Downloading comics");
+    }
+    if (self->download_inhibitor == 0) {
+      response = FL_METHOD_RESPONSE(fl_method_error_response_new(
+          "download_power", "Session manager denied sleep protection", nullptr));
+    } else {
+      response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+    }
+  } else if (strcmp(method, "stop") == 0) {
+    stop_download_protection(self);
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+  } else {
+    response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
+  }
+  fl_method_call_respond(call, response, nullptr);
+}
 
 // Implements GApplication::activate.
 static void my_application_activate(GApplication* application) {
@@ -59,6 +95,12 @@ static void my_application_activate(GApplication* application) {
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
 
+  g_autoptr(FlStandardMethodCodec) download_codec = fl_standard_method_codec_new();
+  g_autoptr(FlMethodChannel) downloads = fl_method_channel_new(
+      fl_engine_get_binary_messenger(fl_view_get_engine(view)),
+      "com.github.pacalini.pica_comic/download", FL_METHOD_CODEC(download_codec));
+  fl_method_channel_set_method_call_handler(downloads, download_method_call, self, nullptr);
+
   gtk_widget_grab_focus(GTK_WIDGET(view));
 }
 
@@ -94,7 +136,7 @@ static void my_application_startup(GApplication* application) {
 static void my_application_shutdown(GApplication* application) {
   //MyApplication* self = MY_APPLICATION(object);
 
-  // Perform any actions required at application shutdown.
+  stop_download_protection(MY_APPLICATION(application));
 
   G_APPLICATION_CLASS(my_application_parent_class)->shutdown(application);
 }
@@ -114,7 +156,9 @@ static void my_application_class_init(MyApplicationClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = my_application_dispose;
 }
 
-static void my_application_init(MyApplication* self) {}
+static void my_application_init(MyApplication* self) {
+  self->download_inhibitor = 0;
+}
 
 MyApplication* my_application_new() {
   return MY_APPLICATION(g_object_new(my_application_get_type(),

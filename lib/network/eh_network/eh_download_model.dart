@@ -11,6 +11,7 @@ import 'package:pica_comic/network/http_client.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 import 'dart:io';
 import '../../tools/io_tools.dart';
+import '../../tools/translations.dart';
 import '../download.dart';
 import 'eh_main_network.dart';
 import 'get_gallery_id.dart';
@@ -168,22 +169,27 @@ class EhDownloadingItem extends DownloadingItem{
       ? super.currentSpeed
       : _currentSpeed;
 
+  int _archiveGeneration = 0;
+
   @override
   start() async{
     if(downloadType == 0){
       return super.start();
     } else {
-      await onStart();
+      final generation = ++_archiveGeneration;
       _stop = false;
       try{
+        await onStart();
+        if (_stop || generation != _archiveGeneration) return;
         await downloadCover();
+        if (_stop || generation != _archiveGeneration) return;
         if(gallery.auth?["archiveDownload"] == null){
           throw "No archive download link";
         }
         if(_downloadLink == null) {
           var res = await EhNetwork().getArchiveDownloadLink(
               gallery.auth!["archiveDownload"]!, downloadType);
-          if (_stop) {
+          if (_stop || generation != _archiveGeneration) {
             return;
           }
           if (res.error) {
@@ -195,20 +201,26 @@ class EhDownloadingItem extends DownloadingItem{
             _downloadLink!,
             path,
             (current, total, speed){
+              if (_stop || generation != _archiveGeneration) return;
               _currentBytes = current;
               _totalBytes = total;
               _currentSpeed = speed;
+              notifications.sendProgressNotification(current, total,
+                  '下载中'.tl, '${DownloadManager().downloading.length} Tasks');
               updateInfo?.call();
               if(current == total){
                 if (DownloadManager().downloading.firstOrNull != this) return;
                 finish();
               }
             },
-            onError!
+            () {
+              if (!_stop && generation == _archiveGeneration) onError?.call();
+            }
         );
         _downloader!.start();
       }
       catch(e, s){
+        if (_stop || generation != _archiveGeneration) return;
         log("$e\n$s", "Download", LogLevel.error);
         onError?.call();
         return;
@@ -225,6 +237,7 @@ class EhDownloadingItem extends DownloadingItem{
     if(downloadType == 0){
       return super.pause();
     } else {
+      _archiveGeneration++;
       _stop = true;
       _downloader?.pause();
     }
@@ -235,6 +248,7 @@ class EhDownloadingItem extends DownloadingItem{
     if(downloadType == 0){
       return super.stop();
     } else {
+      _archiveGeneration++;
       _stop = true;
       _downloader?.stop();
       var directory = Directory(path);
